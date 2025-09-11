@@ -556,6 +556,7 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
 
 void CommandLineArgs::SetAdapter(IAdapter* adapter)
 {
+#if !defined(_GAMING_XBOX) && defined(WIN32)
     if (D3D12_COMMAND_LIST_TYPE_NONE == m_commandListType)
     {
         if (adapter->IsAttributeSupported(DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS))
@@ -572,6 +573,7 @@ void CommandLineArgs::SetAdapter(IAdapter* adapter)
             THROW_HR(E_NOTIMPL);
         }
     }
+#endif
 }
 
 DML_FEATURE_LEVEL GetDmlFeatureLevelFromString(const std::string& featureLevel)

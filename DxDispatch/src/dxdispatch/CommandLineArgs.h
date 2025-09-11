@@ -45,10 +45,12 @@ public:
     uint32_t MaxWarmupSamples() const { return m_maxWarmupSamples; }
     D3D12_COMMAND_LIST_TYPE CommandListType() const 
     {
+#if !defined(_GAMING_XBOX) && defined(WIN32)
         if (D3D12_COMMAND_LIST_TYPE_NONE == m_commandListType)
         {
             return D3D12_COMMAND_LIST_TYPE_DIRECT;
         }
+#endif
         return m_commandListType; 
     }
     PixCaptureType GetPixCaptureType() const { return m_pixCaptureType; }
@@ -104,7 +106,11 @@ private:
     uint32_t m_maxWarmupSamples = 1;
 
     // Tools like PIX generally work better when work is recorded into a graphics queue, so it's set as the default here.
+#ifdef _GAMING_XBOX
+    D3D12_COMMAND_LIST_TYPE m_commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
+#else
     D3D12_COMMAND_LIST_TYPE m_commandListType = D3D12_COMMAND_LIST_TYPE_NONE;
+#endif
     PixCaptureType m_pixCaptureType = PixCaptureType::Manual;
 
     // [onnx models] Overrides for free dimensions by name. 

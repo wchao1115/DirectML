@@ -80,7 +80,9 @@ private:
     decltype(&D3D12CreateDevice) m_d3d12CreateDevice = nullptr;
     decltype(&D3D12GetDebugInterface) m_d3d12GetDebugInterface = nullptr;
     decltype(&D3D12SerializeVersionedRootSignature) m_d3d12SerializeVersionedRootSignature = nullptr;
+#if !defined(_GAMING_XBOX) && defined(WIN32)
     decltype(&D3D12GetInterface) m_d3d12SDKConfiguration = nullptr;
+#endif
 };
 
 // Wraps dxcore.dll / libdxcore.so. Not used for Xbox.

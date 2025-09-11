@@ -11,7 +11,8 @@ static const GUID PIX_EVAL_CAPTURABLE_WORK_GUID =
 #ifdef _GAMING_XBOX
 static bool DebugMessageCallback(void* context, void* commandList, DWORD messageId, const CHAR* message)
 {
-    LogError(message);
+    auto logger = (IDxDispatchLogger*)context;
+    logger->LogError(message);
     return true;
 }
 #else
@@ -214,6 +215,14 @@ Device::Device(
         }
     }
 
+    THROW_IF_FAILED(m_dmlModule->CreateDevice1(
+        m_d3d.Get(), 
+        dmlCreateDeviceFlags, 
+        dmlFeatureLevel, 
+        IID_PPV_ARGS(&m_dml)));
+
+    THROW_IF_FAILED(m_dml->CreateCommandRecorder(IID_PPV_ARGS(&m_commandRecorder)));
+
 #endif // !_GAMING_XBOX
 
     THROW_IF_FAILED(m_d3d->CreateFence(
@@ -256,12 +265,6 @@ Device::Device(
     }
 #endif
 
-    THROW_IF_FAILED(m_dmlModule->CreateDevice1(
-        m_d3d.Get(), 
-        dmlCreateDeviceFlags, 
-        dmlFeatureLevel, 
-        IID_PPV_ARGS(&m_dml)));
-
     THROW_IF_FAILED(m_d3d->CreateCommandAllocator(
         m_commandListType,
         IID_GRAPHICS_PPV_ARGS(m_commandAllocator.ReleaseAndGetAddressOf())));
@@ -273,8 +276,6 @@ Device::Device(
         nullptr,
         IID_GRAPHICS_PPV_ARGS(m_commandList.ReleaseAndGetAddressOf())));
 
-    THROW_IF_FAILED(m_dml->CreateCommandRecorder(IID_PPV_ARGS(&m_commandRecorder)));
-
     // Each GPU time measurement requires a pair of timestamps
     m_timestampCapacity = maxGpuTimeMeasurements * 2;
 
@@ -285,7 +286,7 @@ Device::Device(
         queryHeapDesc.NodeMask = 0;
         queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
 
-        THROW_IF_FAILED(m_d3d->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&m_timestampHeap)));
+        THROW_IF_FAILED(m_d3d->CreateQueryHeap(&queryHeapDesc, IID_GRAPHICS_PPV_ARGS(m_timestampHeap.ReleaseAndGetAddressOf())));
     }
 
     m_pixCaptureHelper->Initialize(m_queue.Get());
@@ -310,7 +311,9 @@ Device::~Device()
 {
     if (m_callbackCookie != 0)
     {
+#ifndef _GAMING_XBOX
         m_infoQueue->UnregisterMessageCallback(m_callbackCookie);
+#endif
         m_callbackCookie = 0;
     }
 

@@ -69,10 +69,6 @@ endfunction()
 # Init using a NuGet distribution.
 # -----------------------------------------------------------------------------
 function(init_directml_target_nuget target_name pkg_id pkg_version pkg_hash)
-    if(TARGET_XBOX)
-        message(FATAL_ERROR "The DirectML NuGet doesn't support Xbox")
-    endif()
-
     set(content ${target_name}_content)
     FetchContent_Declare(
         ${content}
