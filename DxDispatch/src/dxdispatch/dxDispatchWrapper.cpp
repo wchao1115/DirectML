@@ -40,7 +40,7 @@ HRESULT DxDispatch::CreateDxDispatchFromJsonString(
 
     if (adapterUnk)
     {
-        RETURN_IF_FAILED(adapterUnk->QueryInterface(IID_PPV_ARGS(&adapter)));
+        RETURN_IF_FAILED(adapterUnk->QueryInterface(IID_GRAPHICS_PPV_ARGS(adapter.ReleaseAndGetAddressOf())));
     }
     HRESULT hr = S_OK;
 #ifdef WIN32
@@ -160,7 +160,11 @@ HRESULT DxDispatch::RuntimeClassInitialize(
             m_options->SetAdapter(dxDispatchAdapter->GetAdapter());
             m_device = std::make_shared<Device>(
                 dxDispatchAdapter->GetAdapter(),
+#if defined(_WIN32) && !defined(_GAMING_XBOX)
                 D3D_FEATURE_LEVEL_1_0_GENERIC,
+#else
+                D3D_FEATURE_LEVEL_12_2,
+#endif
                 m_options->DmlFeatureLevel(),
                 m_options->DebugLayersEnabled(),
                 m_options->CommandListType(),

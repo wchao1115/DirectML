@@ -13,7 +13,7 @@ using namespace Microsoft::WRL;
 
 int main(int argc, char** argv)
 {
-#ifdef WIN32
+#if !defined(_GAMING_XBOX) && defined(WIN32)
     // For image parsers
     auto coInit = wil::CoInitializeEx_failfast(COINIT_MULTITHREADED);
 #endif
