@@ -133,23 +133,26 @@ Refer to the respective CMake files ([directml.cmake](cmake/directml.cmake), [d3
 
 # Custom Build for Xbox Scarlett
 
-The custom build for Xbox Scarlett only support HLSL dispatchables, no DML ops, no ONNX model dispatchables. To configure the CMake build, do not use the preset `cmake --preset xbox-scarlett`, use the following build configure command followed by the build commands as follows:
+The custom build for Xbox Scarlett only support HLSL dispatchables, no DML ops, no ONNX model dispatchables. To configure the CMake build, do not use the preset `cmake --preset xbox-scarlett`, use the custom build configuration followed by the build commands as follows:
 
 ```
 > cmake . -B build -A Gaming.Xbox.Scarlett.x64 -DDXD_ONNXRUNTIME_TYPE=none -DDXD_GDK_SYSTEM_EDITION=250401 -G "Visual Studio 17 2022"
 
-> cmake --build build --config [Debug | Release]
+> cmake --build build --config [Debug | Release | RelWithDebInfo]
 ```
 
 The GDK Edition in this example is set to `250401` which indicates the *April 2025 Update 1* greensigned release of the Xbox GDK found at `\\edge-svcs\drops\greensignedpackages\2025_04_Update1__GDK`
 
-## CMake Pre-Build Failures
+### Properly Configure VS2022 with the Xbox GDK Extension
 If you run into an error during the CMake pre-build steps, make sure to add **Game development with C++** component in VS 2022 installation, then reinstalling the GDK *after that VS installation/modification*, and that should fix it.
+
+### Use RelWithDebInfo for Debugging
+Currently, you won't be able to run the Debug build. This is due to the C-Runtime libraries populated by CMake `include(InstallRequiredSystemLibraries)` command does not include the Debug version (e.g. VCRUNTIME140d.dll, etc.) as they aren't shippable components. This is a bit unfortunate because by default the Release build does not include .PDB files, so you wouldn't be able to debug a Release build either. A solution to this issue is to use the `RelWithDebInfo` build, which is a Release build but with .PDB files populated in the build output directory.
 
 ## Set Up the Scarlett Dev Kit
 Follow steps outlined in [this document](https://microsoft.visualstudio.com/WindowsAI/_git/dmldocs?path=/Xbox/Docs/devkit_setup.md&_a=preview) to configure a Scarlett devkit.
 
-## Run DxDispatch in the Dev Kit
+## Run/Debug DxDispatch with the Dev Kit
 After the devkit is up and running, use the following commands to work with it.
 
 ```
@@ -167,92 +170,72 @@ If the default console hasn't been set, run **Xbox Manager GDK** to set it up.
 
 <img src="doc/images/Xbox%20Manager.jpg" alt="Xbox Manager" width="75%">
 
-All the Xbox cmd tools *(xb\*.exe)* are under `\Program Files (x86)\Microsoft GDK\bin` directory, so adding this path as part of the user's path will allow it to be called elsewhere in the terminal or console. 
+All the Xbox cmd tools *(xb\*.exe)* are under `\Program Files (x86)\Microsoft GDK\bin` directory, so adding this path as part of the user's path will allow it to be called elsewhere in the terminal or console, which is kinda handy.
 
-Copying `dxdispatch.exe` along with all the needed executable files to a dedicated directory in the `xd:` drive called `dxd` in the devkit as follows:
-
-```
-> xbdir xd:\
-
-Directory of XD:\
-
-09/08/2022  03:48 PM  D         boot
-09/08/2022  03:47 PM  D         Drives
-09/08/2022  03:46 PM  D         Temp
-10/28/2022  12:23 PM  D         WUDownloadCache
-
-                 0 byte(s)
-                 0 file(s)
-                 4 dir(s)
-
-> dir
- Volume in drive C is Windows
- Volume Serial Number is 9EF7-1161
-
- Directory of C:\DirectML.public\DxDispatch\build\Release
-
-09/10/2025  06:43 PM    <DIR>          .
-09/10/2025  06:42 PM    <DIR>          ..
-07/08/2025  01:45 PM           301,024 concrt140.dll
-09/10/2025  06:43 PM        18,988,104 dxcompiler_xs.dll
-09/10/2025  06:43 PM            38,400 dxdispatch.exe
-09/10/2025  06:43 PM         1,121,792 dxdispatchImpl.dll
-09/10/2025  06:43 PM             1,057 dxdispatchImpl.exp
-09/10/2025  06:43 PM             2,208 dxdispatchImpl.lib
-06/06/2025  01:01 PM       345,976,832 gameos.xvd
-09/10/2025  06:43 PM        40,995,152 libdirectml.so
-06/06/2025  12:51 PM           245,312 libHttpClient.GDK.dll
-09/10/2025  06:43 PM               812 MicrosoftGame.Config
-09/10/2025  06:42 PM         6,408,264 model.lib
-07/08/2025  01:45 PM           546,312 msvcp140.dll
-07/08/2025  01:45 PM            26,088 msvcp140_1.dll
-07/08/2025  01:45 PM           270,304 msvcp140_2.dll
-07/08/2025  01:45 PM            39,424 msvcp140_atomic_wait.dll
-07/08/2025  01:45 PM            21,984 msvcp140_codecvt_ids.dll
-07/08/2025  01:45 PM           343,008 vccorlib140.dll
-07/08/2025  01:45 PM            72,712 vcomp140.dll
-07/08/2025  01:45 PM           113,632 vcruntime140.dll
-07/08/2025  01:45 PM            38,368 vcruntime140_1.dll
-07/08/2025  01:45 PM            29,168 vcruntime140_threads.dll
-06/06/2025  12:51 PM           198,208 XCurl.dll
-              22 File(s)    415,778,165 bytes
-               2 Dir(s)  157,652,697,088 bytes free
-
-> xbmkdir xd:\dxd
-
-> xbcp . xd:\dxd
-```
-Copy relevant test files to the same directory in the devkit.
-```
-> xbcp ..\..\models\hlsl_add_fp32.json xd:\dxd
-
-> xbcp ..\..\models\hlsl_add.hlsl xd:\dxd
-```
 Test if the Game OS is up and running in the devkit.
 ```
 > xbapp querygameos
+
 Game OS is not running.
 Game is not running.
 The operation completed successfully.
 ```
 If it's not running, start it. Thanks to the DxDispatch build configuration, the matching version of the Game OS XVD is already there.
 ```
-> xbapp applyconfig xd:\dxd\gameos.xvd
+> xbapp applyconfig .\gameos.xvd
+
 Game OS is starting up. Waiting for the OS to be ready for interaction...
 The operation completed successfully.
 ```
-Run `dxdispatch.exe` with the HLSL dispatchable on the devkit as follows. Parameterize dxdispatch to your liking.
+The most convenient way to debug `dxdispatch.exe` running in the devkit is through VS2022 with the Xbox GDK Extension.
+
+### Launch the App into Devkit
+Unlike a typical Windows PC, a devkit can run a game in the Game OS only after the two conditions are met:
+1. The game execution binary is uploaded and registered with the system.
+2. The Game OS xvd is located in the same directory as the game execution binary.
+
+The dxdispatch CMake script already populates the matching version of `gameos.xvd` in the build output directory alongside `dxdispatch.exe`.
 ```
-> xbrun /o /x /title d:\dxd\dxdispatch d:\dxd\hlsl_add_fp32.json -i 2 -r 10 -v 2
-Running on 'Xbox'
-Initialize 'add': 52.1629 ms
-Dispatch 'add': 2 iterations
-CPU Timings (Cold) : 1 samples, 0.0128 ms average, 0.0128 ms min, 0.0128 ms median, 0.0128 ms max
-GPU Timings (Cold) : 1 samples, 0.0015 ms average, 0.0015 ms min, 0.0015 ms median, 0.0015 ms max
-CPU Timings (Hot)  : 1 samples, 0.0031 ms average, 0.0031 ms min, 0.0031 ms median, 0.0031 ms max
-GPU Timings (Hot)  : 1 samples, 0.0012 ms average, 0.0012 ms min, 0.0012 ms median, 0.0012 ms max
-The timings of each iteration:
-iteration 0: 0.0128 ms (CPU), 0.0015 ms (GPU)
-iteration 1: 0.0031 ms (CPU), 0.0012 ms (GPU)
-Resource 'Out': 2, 7, 6, 11, 2, 7
+> dir
+
+    Directory: C:\DirectML.public\DxDispatch\build\RelWithDebInfo
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----         9/17/2025   3:53 PM          91136 dxdispatch.exe
+-a----          6/6/2025   1:01 PM      345976832 gameos.xvd
+                            ...
+
+> xbapp launch .\dxdispatch.exe
+
+  Launch string: .\dxdispatch.exe
+The operation completed successfully.
 ```
+
+With the `xbapp launch` command, the Xbox will start up the version of Game OS sitting next to your .exe and run the .exe inside that OS.
+
+To check if the game is really registered after launched, do this:
+
+```
+> xbapp list
+
+Registered Applications by Package Full Name:
+
+   DxDispatch_0.18.1.0_neutral__8wekyb3d8bbwe
+        DxDispatch_8wekyb3d8bbwe!Game
+             xbtp:\\jay-gamma\C:\DirectML.public\DxDispatch\build\RelWithDebInfo\dxdispatch.exe
+```
+
+Note that the `xbapp launch` command will copy every file over to the Xbox storage, so if you have any additional test files to run with `dxdispatch.exe`, make sure they're all in the same directory before issuing the launch command. 
+
+You can also see the registered apps in the Xbox Manager.
+
+<img src="doc/images/xbox_man_registered_apps.jpg" alt="Xbox Manager Shows Registered Apps" width="75%">
+
+You will be able to see the registered app also show up in the "Xbox Gaming Explorer" pane in VS2022 (open from under Extensions/Xbox menu).
+
+<img src="doc/images/vs2022_xbox_gaming_explorer.jpg" alt="Visual Studio 2022 with Xbox Gaming Explorer" width="30%">
+
+To start debug, select "Debug Title" menu option. Program's arguments and options e.g. `.\hlsl_add_fp32.json -i 2 -r 10 -v 2` can be supplied in the "Set Command Arguments..." option in the properties drop down menu.
+
+<img src="doc/images/vs2022_debug_xbox_game.jpg" alt="Debug a Game with Visual Studio 2022" width="30%">
