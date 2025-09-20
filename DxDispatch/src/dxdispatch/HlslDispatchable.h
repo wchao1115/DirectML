@@ -34,6 +34,8 @@ private:
     std::shared_ptr<Device> m_device;
     Model::HlslDispatchableDesc m_desc;
     bool m_forceDisablePrecompiledShadersOnXbox;
+    bool m_rootSigDefinedOnXbox;
+    bool m_noPdb;
     Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_shaderReflection;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
