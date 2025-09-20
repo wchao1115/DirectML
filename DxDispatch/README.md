@@ -189,8 +189,8 @@ The operation completed successfully.
 ```
 The most convenient way to debug `dxdispatch.exe` running in the devkit is through VS2022 with the Xbox GDK Extension.
 
-### Launch the App into Devkit
-Unlike a typical Windows PC, a devkit can run a game in the Game OS only after the two conditions are met:
+### Debug the App in the Devkit
+To debug an app in the Game OS, the two conditions must be met:
 1. The game execution binary is uploaded and registered with the system.
 2. The Game OS xvd is located in the same directory as the game execution binary.
 
@@ -212,7 +212,7 @@ Mode                 LastWriteTime         Length Name
 The operation completed successfully.
 ```
 
-With the `xbapp launch` command, the Xbox will start up the version of Game OS sitting next to your .exe and run the .exe inside that OS.
+With the `xbapp launch` command, the Xbox will start up the version of Game OS sitting next to your .exe register the .exe inside that Game OS.
 
 To check if the game is really registered after launched, do this:
 
@@ -236,6 +236,39 @@ You will be able to see the registered app also show up in the "Xbox Gaming Expl
 
 <img src="doc/images/vs2022_xbox_gaming_explorer.jpg" alt="Visual Studio 2022 with Xbox Gaming Explorer" width="30%">
 
-To start debug, select "Debug Title" menu option. Program's arguments and options e.g. `.\hlsl_add_fp32.json -i 2 -r 10 -v 2` can be supplied in the "Set Command Arguments..." option in the properties drop down menu.
+To start debugging in VS2022, select "Debug Title" menu option. Program's arguments and options e.g. `.\hlsl_add_fp32.json -i 2 -r 10 -v 2` can be supplied in the "Set Command Arguments..." option in the properties drop down menu.
 
 <img src="doc/images/vs2022_debug_xbox_game.jpg" alt="Debug a Game with Visual Studio 2022" width="30%">
+
+### Run the App in the Devkit from a Command Line
+First, copy the .exe and all its dependency files into the devkit using `xbcp`. Xbox drives have `x` as a prefix in the name e.g `xd:` is the D: drive in the Xbox storage system.
+
+```
+> xbmkdir xd:\dxd
+> xbcp . xd:\dxd
+> xbdir xd:\dxd
+
+Directory of XD:\dxd
+
+09/17/2025  03:53 PM      A       91,136  dxdispatch.exe
+09/17/2025  03:53 PM      A    1,445,888  dxdispatch.pdb
+06/06/2025  01:01 PM      A  345,976,832  gameos.xvd
+              ...
+```
+Now, run `DxDispatch.exe` from the Xbox storage drive using `xbrun`. Note that for xbrun, the drive letter is *without* the prefix `x`! 
+
+```
+> xbrun /o /x /title d:\dxd\dxdispatch -h
+
+dxdispatch version 0.18.1
+  DirectML       : NuGet (Microsoft.AI.DirectML.1.15.0)
+  D3D12          : GDK
+  DXCompiler     : GDK
+  PIX            : GDK
+  ONNX Runtime   : None
+  ORT Extensions : None
+
+Usage:
+  dxdispatch [OPTION...] <PATH_TO_MODEL>
+  ...
+```
