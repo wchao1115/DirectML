@@ -23,6 +23,7 @@ public:
     TimingVerbosity GetTimingVerbosity() const { return m_timingVerbosity; }
     uint32_t MaxGpuTimeMeasurements() const { return m_maxGpuTimeMeasurements; }
     bool ForceDisablePrecompiledShadersOnXbox() const { return m_forceDisablePrecompiledShadersOnXbox; }
+    bool RootSigDefinedOnXbox() const { return m_rootSigDefinedOnXbox; }
     bool ClearShaderCaches() const { return m_clearShaderCaches; }
     bool DisableGpuTimeout() const { return m_disableGpuTimeout; }
     bool EnableDred() const { return m_enableDred; }
@@ -30,6 +31,7 @@ public:
     bool SetStablePowerState() const { return m_setStablePowerState; }
     bool PreferCustomHeaps() const { return m_preferCustomHeaps; }
     bool DisableAgilitySDK() const { return m_disableAgilitySDK; }
+    bool NoPdb() const { return m_noPdb; }
     const std::string& AdapterSubstring() const { return m_adapterSubstring; }
 
     const std::optional<std::filesystem::path>& ModelPath() const { return m_modelPath; }
@@ -82,6 +84,7 @@ private:
     TimingVerbosity m_timingVerbosity = TimingVerbosity::Basic;
     uint32_t m_maxGpuTimeMeasurements = 8192;
     bool m_forceDisablePrecompiledShadersOnXbox = true;
+    bool m_rootSigDefinedOnXbox = false;
     bool m_clearShaderCaches = false;
     bool m_disableGpuTimeout = false;
     bool m_enableDred = false;
@@ -90,6 +93,7 @@ private:
     bool m_preferCustomHeaps = true;
     bool m_disableAgilitySDK = false;
     bool m_presentSeparator = false;
+    bool m_noPdb = false;
     bool m_uavBarrierAfterDispatch = true;
     bool m_aliasingBarrierAfterDispatch = false;
     DML_FEATURE_LEVEL m_dmlFeatureLevel = DML_FEATURE_LEVEL_5_0;

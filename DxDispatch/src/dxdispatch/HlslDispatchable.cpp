@@ -9,7 +9,8 @@
 using Microsoft::WRL::ComPtr;
 
 HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger)
-    : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
+    : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_noPdb(args.NoPdb()), m_rootSigDefinedOnXbox(args.RootSigDefinedOnXbox()),
+      m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
 {
 }
 
@@ -139,9 +140,15 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
         THROW_IF_FAILED(m_shaderReflection->GetResourceBindingDesc(resourceIndex, &shaderInputDescs[resourceIndex]));
     }
 
-    std::vector<D3D12_ROOT_PARAMETER1> rootParameters;
     auto [descriptorRanges, bindPoints] = ReflectBindingData(shaderInputDescs);
     m_bindPoints = bindPoints;
+
+#ifdef _GAMING_XBOX
+    if (m_rootSignature)
+        return;
+#endif
+
+    std::vector<D3D12_ROOT_PARAMETER1> rootParameters;
 
     if (!descriptorRanges.empty())
     {
@@ -253,18 +260,27 @@ void HlslDispatchable::CompileWithDxc()
         IID_PPV_ARGS(&reflectionBlob), 
         nullptr));
 
-    ComPtr<IDxcBlob> pdbBlob;
-    ComPtr<IDxcBlobUtf16> pdbName;
-    if (SUCCEEDED(result->GetOutput(
-        DXC_OUT_PDB, 
-        IID_PPV_ARGS(&pdbBlob), 
-        &pdbName)))
+    if (!m_noPdb)
     {
-        // TODO: store this in a temp directory?
-        FILE* fp = nullptr;
-        _wfopen_s(&fp, pdbName->GetStringPointer(), L"wb");
-        fwrite(pdbBlob->GetBufferPointer(), pdbBlob->GetBufferSize(), 1, fp);
-        fclose(fp);
+        ComPtr<IDxcBlob> pdbBlob;
+        ComPtr<IDxcBlobUtf16> pdbName;
+        if (SUCCEEDED(result->GetOutput(
+            DXC_OUT_PDB,
+            IID_PPV_ARGS(&pdbBlob),
+            &pdbName)))
+        {
+            // TODO: store this in a temp directory?
+            FILE* fp = nullptr;
+#ifdef _GAMING_XBOX
+            std::wstring fullPath = L"T:\\"; // T:\ is writable in Xbox.
+#else
+            std::wstring fullPath;
+#endif
+            fullPath += pdbName->GetStringPointer();
+            _wfopen_s(&fp, fullPath.c_str(), L"wb");
+            fwrite(pdbBlob->GetBufferPointer(), pdbBlob->GetBufferSize(), 1, fp);
+            fclose(fp);
+        }
     }
 
     DxcBuffer reflectionBuffer;
@@ -301,6 +317,22 @@ void HlslDispatchable::CompileWithDxc()
         m_logger->LogInfo("---------------------------------------------------------");
     }
 
+#ifdef _GAMING_XBOX
+    if (m_rootSigDefinedOnXbox)
+    {
+        ComPtr<IDxcBlob> rootSignatureBlob;
+        THROW_IF_FAILED(result->GetOutput(
+            DXC_OUT_ROOT_SIGNATURE,
+            IID_PPV_ARGS(&rootSignatureBlob),
+            nullptr));
+
+        THROW_IF_FAILED(m_device->D3D()->CreateRootSignature(
+            0,
+            rootSignatureBlob->GetBufferPointer(),
+            rootSignatureBlob->GetBufferSize(),
+            IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
+    }
+#endif
     CreateRootSignatureAndBindingMap();
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
