@@ -114,6 +114,14 @@ public:
     }
 
     Microsoft::WRL::ComPtr<ID3D12Resource> Upload(uint64_t totalSize, gsl::span<const std::byte> data, std::wstring_view name = {});
+    // Overload: Upload a 2D texture (1 mip, 1 array slice). If initialData is empty the resource is
+    // created directly in PIXEL_SHADER_RESOURCE state; otherwise data is staged then transitioned.
+    Microsoft::WRL::ComPtr<ID3D12Resource> Upload(
+        uint32_t width,
+        uint32_t height,
+        DXGI_FORMAT format,
+        gsl::span<const std::byte> data = {},
+        std::wstring_view name = {});
 
     std::vector<std::byte> Download(Microsoft::WRL::ComPtr<ID3D12Resource>);
 

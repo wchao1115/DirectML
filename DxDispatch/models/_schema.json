@@ -174,21 +174,60 @@
             "required": [ "initialValues", "initialValuesDataType" ]
         },
 
-        "resource": 
+        "texture":
         {
             "type": "object",
             "properties":
             {
-                "type": 
-                {
-                    "type": "string",
-                    "enum": ["buffer"],
-                    "description": "The type of resource",
-                    "default": "buffer"
+                "width": { "type": "integer", "minimum": 1, "description": "Texture width in texels" },
+                "height": { "type": "integer", "minimum": 1, "description": "Texture height in texels" },
+                "format": { "type": "string", "description": "DXGI_FORMAT (defaults to R8G8B8A8_UNORM if omitted)" },
+                "dimension": { "type": "string", "enum": ["2D"], "description": "Texture dimension (currently only 2D supported)", "default": "2D" },
+                "mipLevels": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Number of mip levels (currently must be 1)", "default": 1 },
+                "arraySize": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Array size (currently must be 1)", "default": 1 },
+                "usage": { "type": "string", "enum": ["srv"], "description": "Intended binding usage (currently only 'srv')", "default": "srv" },
+                "initialValues": {
+                    "description": "Optional initial data: object with sourcePath or raw byte array",
+                    "oneOf": [
+                        { "type": "object", "properties": { "sourcePath": { "type": "string" } }, "required": ["sourcePath"] },
+                        { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+                    ]
                 }
             },
-            "if": { "properties": { "type": { "const": "buffer" } } },
-            "then": { "$ref": "#/$defs/buffer" }
+            "required": ["width", "height"],
+            "additionalProperties": true
+        },
+
+        "sampler":
+        {
+            "type": "object",
+            "properties":
+            {
+                "filter": { "type": "string", "enum": ["point", "linear", "anisotropic"], "description": "Sampler filter mode", "default": "linear" },
+                "addressU": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
+                "addressV": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
+                "addressW": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
+                "mipLODBias": { "type": "number", "default": 0.0 },
+                "maxAnisotropy": { "type": "integer", "minimum": 1, "default": 1 },
+                "comparisonFunc": { "type": "string", "enum": ["less","lequal","greater","gequal","equal","notequal","never","always"], "default": "always" },
+                "borderColor": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+                "minLOD": { "type": "number", "default": 0.0 },
+                "maxLOD": { "type": "number", "default": 3.402823e+38 }
+            },
+            "additionalProperties": true
+        },
+
+        "resource":
+        {
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["buffer","texture","sampler"], "default": "buffer", "description": "Resource kind discriminator (buffer|texture|sampler). If omitted, defaults to buffer." }
+            },
+            "allOf": [
+                { "if": { "properties": { "kind": { "const": "texture" } } }, "then": { "$ref": "#/$defs/texture" } },
+                { "if": { "properties": { "kind": { "const": "sampler" } } }, "then": { "$ref": "#/$defs/sampler" } },
+                { "if": { "anyOf": [ { "properties": { "kind": { "const": "buffer" } } }, { "not": { "required": ["kind"] } } ] }, "then": { "$ref": "#/$defs/buffer" } }
+            ]
         },
     
         "hlslDispatchable": 

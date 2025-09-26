@@ -47,10 +47,35 @@ public:
         bool useDeferredBinding;
     };
 
+    // Texture resource description (moved out of ResourceDesc)
+    struct TextureDesc
+    {
+        uint32_t width;
+        uint32_t height;
+        DXGI_FORMAT format;                 // e.g. DXGI_FORMAT_R8G8B8A8_UNORM
+        std::vector<std::byte> initialData; // Optional initial texel data (row-major, tightly packed)
+        bool useDeferredBinding = false;    // For parity with buffers (not yet implemented for textures)
+    };
+    
+    // Sampler description (moved out of ResourceDesc)
+    struct SamplerDesc
+    {
+        D3D12_FILTER filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        D3D12_TEXTURE_ADDRESS_MODE addressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        D3D12_TEXTURE_ADDRESS_MODE addressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        D3D12_TEXTURE_ADDRESS_MODE addressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        float mipLODBias = 0.f;
+        uint32_t maxAnisotropy = 1;
+        D3D12_COMPARISON_FUNC comparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        float borderColor[4] = {0,0,0,0};
+        float minLOD = 0.f;
+        float maxLOD = D3D12_FLOAT32_MAX;
+    };
+
     struct ResourceDesc
     {
         std::string name;
-        std::variant<BufferDesc> value;
+        std::variant<BufferDesc, TextureDesc, SamplerDesc> value;
     };
 
     // DISPATCHABLES

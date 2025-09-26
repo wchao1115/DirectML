@@ -111,16 +111,27 @@ Executor::Executor(Model& model, std::shared_ptr<Device> device, const CommandLi
         PIXScopedEvent(m_device->GetCommandList(), PIX_COLOR(255, 255, 0), "Initialize resources");
         for (auto& desc : model.GetResourceDescs())
         {
-            // Only buffers are supported right now.
-            assert(std::holds_alternative<Model::BufferDesc>(desc.value));
-            auto& bufferDesc = std::get<Model::BufferDesc>(desc.value);
             auto wName = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(desc.name);
-            if (bufferDesc.sizeInBytes > 0)
+            if (std::holds_alternative<Model::BufferDesc>(desc.value))
             {
-                m_resources[desc.name] = std::move(device->Upload(bufferDesc.sizeInBytes, bufferDesc.initialValues, wName));
+                auto& bufferDesc = std::get<Model::BufferDesc>(desc.value);
+                if (bufferDesc.sizeInBytes > 0)
+                {
+                    m_resources[desc.name] = std::move(device->Upload(bufferDesc.sizeInBytes, bufferDesc.initialValues, wName));
+                }
+                else
+                {
+                    m_resources[desc.name] = nullptr;
+                }
             }
-            else
+            else if (std::holds_alternative<Model::TextureDesc>(desc.value))
             {
+                auto& texDesc = std::get<Model::TextureDesc>(desc.value);
+                m_resources[desc.name] = std::move(device->Upload(texDesc.width, texDesc.height, texDesc.format, texDesc.initialData, wName));
+            }
+            else if (std::holds_alternative<Model::SamplerDesc>(desc.value))
+            {
+                // Samplers are not ID3D12Resource objects; store nullptr placeholder.
                 m_resources[desc.name] = nullptr;
             }
         }

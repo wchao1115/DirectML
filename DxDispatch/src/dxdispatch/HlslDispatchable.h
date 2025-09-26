@@ -24,6 +24,10 @@ public:
         D3D12_DESCRIPTOR_RANGE_TYPE descriptorType;
         uint32_t offsetInDescriptorsFromTableStart;
         uint32_t structureByteStride;
+        // Texture support (samplers deferred). When 'isTexture' is true the buffer-specific members 
+        // (viewType/structureByteStride) are ignored for descriptor creation.
+        bool isTexture = false;
+        D3D_SRV_DIMENSION srvDimension = D3D_SRV_DIMENSION_UNKNOWN; // Valid if isTexture & descriptorType==SRV
     };
 
 private:
@@ -40,7 +44,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
+    // Separate heap for samplers (D3D12 requires distinct heap type)
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_samplerDescriptorHeap;
     std::unordered_map<std::string, BindPoint> m_bindPoints;
     bool m_printHlslDisassembly = false;
     Microsoft::WRL::ComPtr<IDxDispatchLogger> m_logger;
+    // Root parameter indices (descriptor tables) for CSU (CBV/SRV/UAV) and SAMPLER heaps.
+    int m_csuRootParameterIndex = -1; // CBV/SRV/UAV descriptor table root parameter index
+    int m_samplerRootParameterIndex = -1;
 };
