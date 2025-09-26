@@ -1317,7 +1317,184 @@ Model::ResourceDesc ParseModelResourceDesc(
 {
     Model::ResourceDesc desc;
     desc.name = name;
-    desc.value = ParseModelBufferDesc(parentPath, object);
+    // Heuristic / explicit discriminator for resource kind.
+    // If "kind" field present, honor it. Otherwise, fall back to legacy buffer parse.
+    std::string kind;
+    if (object.IsObject())
+    {
+        auto kindIt = object.FindMember("kind");
+        if (kindIt != object.MemberEnd() && kindIt->value.IsString())
+        {
+            kind = kindIt->value.GetString();
+        }
+    }
+
+    auto iequals = [](const std::string& a, const char* b){ return _stricmp(a.c_str(), b) == 0; }; 
+
+    if (kind.empty())
+    {
+        // Infer texture if it has typical texture fields and no buffer-only fields.
+        if (object.IsObject() && object.HasMember("width") && object.HasMember("height"))
+        {
+            kind = "texture";
+        }
+        else if (object.IsObject() && object.HasMember("filter") && object.HasMember("addressU"))
+        {
+            kind = "sampler";
+        }
+        else
+        {
+            kind = "buffer"; // legacy
+        }
+    }
+
+    if (iequals(kind, "buffer"))
+    {
+        desc.value = ParseModelBufferDesc(parentPath, object);
+    }
+    else if (iequals(kind, "texture"))
+    {
+        Model::TextureDesc tex = {};
+        // Required fields
+        tex.width = ParseUInt32Field(object, "width", true, 0);
+        tex.height = ParseUInt32Field(object, "height", true, 0);
+        // Optional structural fields (Phase A-C: only 2D, single mip, single slice, SRV usage allowed)
+        std::string dimensionStr = ParseStringField(object, "dimension", false, "2D");
+        if (_stricmp(dimensionStr.c_str(), "2D") != 0)
+        {
+            throw std::invalid_argument("Only 2D textures are currently supported (dimension must be '2D').");
+        }
+        uint32_t mipLevels = ParseUInt32Field(object, "mipLevels", false, 1);
+        if (mipLevels != 1)
+        {
+            throw std::invalid_argument("Only a single mip level is currently supported (mipLevels must be 1).");
+        }
+        uint32_t arraySize = ParseUInt32Field(object, "arraySize", false, 1);
+        if (arraySize != 1)
+        {
+            throw std::invalid_argument("Only a single array slice is currently supported (arraySize must be 1).");
+        }
+        std::string usageStr = ParseStringField(object, "usage", false, "srv");
+        if (_stricmp(usageStr.c_str(), "srv") != 0)
+        {
+            throw std::invalid_argument("Texture 'usage' currently only supports 'srv'.");
+        }
+        // Optional format string using existing DXGI parser if present; else default RGBA8.
+        if (object.HasMember("format"))
+        {
+            tex.format = ParseDxgiFormat(object["format"]);
+        }
+        else
+        {
+            tex.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        }
+        // Optional initial data: allow { "initialValues": { "sourcePath": "..." } } similar to buffers
+        auto initIt = object.FindMember("initialValues");
+        bool rawArrayInitialValues = false;
+        if (initIt != object.MemberEnd())
+        {
+            if (initIt->value.IsObject() && initIt->value.HasMember("sourcePath"))
+            {
+                auto [fileData, fileType, fileName] = GenerateInitialValuesFromFile(parentPath, initIt->value, {/*unused*/}, "scale");
+                tex.initialData = std::move(fileData);
+            }
+            else if (initIt->value.IsArray())
+            {
+                // Accept raw byte array (uint8) for simplicity.
+                tex.initialData = ParseArrayAsBytes<uint8_t>(initIt->value, ParseUInt8);
+                rawArrayInitialValues = true;
+            }
+        }
+        // Validate raw array byte count matches dimensions (only for raw arrays we created directly; file loader paths may have their own semantics)
+        if (rawArrayInitialValues && !tex.initialData.empty())
+        {
+            auto BytesPerPixel = [](DXGI_FORMAT fmt)->uint32_t
+            {
+                switch (fmt)
+                {
+                case DXGI_FORMAT_R8G8B8A8_UNORM:
+                case DXGI_FORMAT_B8G8R8A8_UNORM:
+                case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                    return 4;
+                default:
+                    throw std::invalid_argument("Raw byte array initialization only supported for 4-byte-per-pixel RGBA formats currently.");
+                }
+            };
+            uint64_t expectedSize = static_cast<uint64_t>(tex.width) * static_cast<uint64_t>(tex.height) * BytesPerPixel(tex.format);
+            if (tex.initialData.size() != expectedSize)
+            {
+                throw std::invalid_argument(fmt::format(
+                    "Texture initialValues byte length ({}) does not match width*height*Bpp ({}).", 
+                    tex.initialData.size(), expectedSize));
+            }
+        }
+        desc.value = std::move(tex);
+    }
+    else if (iequals(kind, "sampler"))
+    {
+        Model::SamplerDesc samp = {};
+        auto parseAddress = [](const rapidjson::Value& v)->D3D12_TEXTURE_ADDRESS_MODE
+        {
+            if (!v.IsString()) throw std::invalid_argument("Sampler address mode must be string");
+            std::string m = v.GetString();
+            if (!_stricmp(m.c_str(), "wrap")) return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            if (!_stricmp(m.c_str(), "clamp")) return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            if (!_stricmp(m.c_str(), "mirror")) return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+            if (!_stricmp(m.c_str(), "border")) return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            if (!_stricmp(m.c_str(), "mirror_once")) return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+            throw std::invalid_argument("Unknown sampler address mode");
+        };
+        auto parseFilter = [](const rapidjson::Value& v)->D3D12_FILTER
+        {
+            if (!v.IsString()) throw std::invalid_argument("Sampler filter must be string");
+            std::string f = v.GetString();
+            if (!_stricmp(f.c_str(), "point")) return D3D12_FILTER_MIN_MAG_MIP_POINT;
+            if (!_stricmp(f.c_str(), "linear")) return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+            if (!_stricmp(f.c_str(), "anisotropic")) return D3D12_FILTER_ANISOTROPIC;
+            return D3D12_FILTER_MIN_MAG_MIP_LINEAR; // default
+        };
+        if (object.HasMember("filter")) samp.filter = parseFilter(object["filter"]);
+        if (object.HasMember("addressU")) samp.addressU = parseAddress(object["addressU"]);
+        if (object.HasMember("addressV")) samp.addressV = parseAddress(object["addressV"]);
+        if (object.HasMember("addressW")) samp.addressW = parseAddress(object["addressW"]);
+        if (object.HasMember("mipLODBias")) samp.mipLODBias = ParseFloat32(object["mipLODBias"]);
+        if (object.HasMember("maxAnisotropy")) samp.maxAnisotropy = ParseUInt32(object["maxAnisotropy"]);
+        if (object.HasMember("comparisonFunc"))
+        {
+            if (!object["comparisonFunc"].IsString()) throw std::invalid_argument("comparisonFunc must be string");
+            std::string cf = object["comparisonFunc"].GetString();
+            if (!_stricmp(cf.c_str(), "less")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_LESS;
+            else if (!_stricmp(cf.c_str(), "lequal")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            else if (!_stricmp(cf.c_str(), "greater")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_GREATER;
+            else if (!_stricmp(cf.c_str(), "gequal")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+            else if (!_stricmp(cf.c_str(), "equal")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_EQUAL;
+            else if (!_stricmp(cf.c_str(), "notequal")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
+            else if (!_stricmp(cf.c_str(), "never")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+            else if (!_stricmp(cf.c_str(), "always")) samp.comparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        }
+        if (object.HasMember("borderColor") && object["borderColor"].IsArray() && object["borderColor"].GetArray().Size() == 4)
+        {
+            for (uint32_t i=0;i<4;i++) samp.borderColor[i] = object["borderColor"].GetArray()[i].GetFloat();
+        }
+        if (object.HasMember("minLOD")) samp.minLOD = ParseFloat32(object["minLOD"]);
+        if (object.HasMember("maxLOD")) samp.maxLOD = ParseFloat32(object["maxLOD"]);
+        // Additional sampler validation aligned with schema intents
+        if (samp.filter == D3D12_FILTER_ANISOTROPIC && samp.maxAnisotropy < 2)
+        {
+            throw std::invalid_argument("Sampler maxAnisotropy must be >= 2 when filter is anisotropic.");
+        }
+        bool anyBorder = (samp.addressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER) || (samp.addressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER) || (samp.addressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER);
+        if (anyBorder && !object.HasMember("borderColor"))
+        {
+            throw std::invalid_argument("Sampler with border address mode requires 'borderColor' array of 4 numbers.");
+        }
+        desc.value = std::move(samp);
+    }
+    else
+    {
+        throw std::invalid_argument("Unknown resource kind");
+    }
     return desc;
 }
 

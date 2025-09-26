@@ -14,63 +14,48 @@ HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::
 {
 }
 
+// Buffer classification helpers (textures handled separately).
 HlslDispatchable::BufferViewType GetViewType(const D3D12_SHADER_INPUT_BIND_DESC& desc)
 {
-    if ((desc.Dimension != D3D_SRV_DIMENSION_BUFFER) && 
-        (desc.Type != D3D_SIT_CBUFFER) &&
-        (desc.Type != D3D_SIT_TBUFFER))
-    {
-        throw std::invalid_argument("Only buffers are supported");
-    }
-
     switch (desc.Type)
     {
-    case D3D_SIT_TEXTURE: // Buffer
-    case D3D_SIT_UAV_RWTYPED: // RWBuffer
-    case D3D_SIT_TBUFFER: // tbuffer
+    case D3D_SIT_TEXTURE: // Could be Buffer (Dimension==BUFFER) or real texture (handled elsewhere)
+    case D3D_SIT_UAV_RWTYPED:
+    case D3D_SIT_TBUFFER:
         return HlslDispatchable::BufferViewType::Typed;
-
-    case D3D_SIT_CBUFFER: // cbuffer
-    case D3D_SIT_STRUCTURED: // StructuredBuffer
-    case D3D_SIT_UAV_RWSTRUCTURED: // RWStructuredBuffer
-    case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER: // (Append|Consume)StructuredBuffer
+    case D3D_SIT_CBUFFER:
+    case D3D_SIT_STRUCTURED:
+    case D3D_SIT_UAV_RWSTRUCTURED:
+    case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
         return HlslDispatchable::BufferViewType::Structured;
-
-    case D3D_SIT_BYTEADDRESS: // ByteAddresBuffer
-    case D3D_SIT_UAV_RWBYTEADDRESS: // RWByteAddressBuffer
+    case D3D_SIT_BYTEADDRESS:
+    case D3D_SIT_UAV_RWBYTEADDRESS:
         return HlslDispatchable::BufferViewType::Raw;
-
-    default: throw std::invalid_argument("Shader input type is not supported");
+    default:
+        throw std::invalid_argument("Shader input type is not supported for buffer classification");
     }
 }
 
 D3D12_DESCRIPTOR_RANGE_TYPE GetDescriptorRangeType(const D3D12_SHADER_INPUT_BIND_DESC& desc)
 {
-    if ((desc.Dimension != D3D_SRV_DIMENSION_BUFFER) && 
-        (desc.Type != D3D_SIT_CBUFFER) &&
-        (desc.Type != D3D_SIT_TBUFFER))
-    {
-        throw std::invalid_argument("Only buffers are supported");
-    }
-
     switch (desc.Type)
     {
-    case D3D_SIT_CBUFFER: // cbuffer
+    case D3D_SIT_CBUFFER:
         return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-
-    case D3D_SIT_TEXTURE: // Buffer
-    case D3D_SIT_STRUCTURED: // StructuredBuffer
-    case D3D_SIT_BYTEADDRESS: // ByteAddresBuffer
-    case D3D_SIT_TBUFFER: // tbuffer
+    case D3D_SIT_TEXTURE:
+    case D3D_SIT_STRUCTURED:
+    case D3D_SIT_BYTEADDRESS:
+    case D3D_SIT_TBUFFER:
         return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    
-    case D3D_SIT_UAV_RWTYPED: // RWBuffer
-    case D3D_SIT_UAV_RWSTRUCTURED: // RWStructuredBuffer
-    case D3D_SIT_UAV_RWBYTEADDRESS: // RWByteAddressBuffer
-    case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER: // (Append|Consume)StructuredBuffer
+    case D3D_SIT_UAV_RWTYPED:
+    case D3D_SIT_UAV_RWSTRUCTURED:
+    case D3D_SIT_UAV_RWBYTEADDRESS:
+    case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
         return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-
-    default: throw std::invalid_argument("Shader input type is not supported");
+    case D3D_SIT_SAMPLER:
+        return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    default:
+        throw std::invalid_argument("Shader input type is not supported for descriptor range classification");
     }
 }
 
@@ -80,27 +65,47 @@ using BindingData = std::tuple<
 
 // Reflects descriptor ranges and binding points from the HLSL source.
 BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInputDescs)
-{
-    std::vector<D3D12_DESCRIPTOR_RANGE1> descriptorRanges;
+{    
+    std::vector<D3D12_DESCRIPTOR_RANGE1> descriptorRanges; // all ranges (we'll partition later)
     std::unordered_map<std::string, HlslDispatchable::BindPoint> bindPoints;
 
     D3D12_DESCRIPTOR_RANGE1 currentRange = {};
     currentRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    uint32_t currentOffsetInDescriptors = 0;
+
+    uint32_t currentOffsetCSU = 0;      // CBV/SRV/UAV heap-relative
+    uint32_t currentOffsetSampler = 0;  // SAMPLER heap-relative
 
     for (size_t resourceIndex = 0; resourceIndex < shaderInputDescs.size(); resourceIndex++)
     {
         const auto& shaderInputDesc = shaderInputDescs[resourceIndex];
-        auto viewType = GetViewType(shaderInputDesc);
+        bool isTexture = false;
+        D3D_SRV_DIMENSION srvDim = D3D_SRV_DIMENSION_UNKNOWN;
+
+        if (shaderInputDesc.Type == D3D_SIT_TEXTURE && shaderInputDesc.Dimension != D3D_SRV_DIMENSION_BUFFER)
+        {
+            isTexture = true;
+            srvDim = shaderInputDesc.Dimension;
+        }
+
         auto rangeType = GetDescriptorRangeType(shaderInputDesc);
         auto numDescriptors = shaderInputDesc.BindCount;
 
-        bindPoints[shaderInputDesc.Name] = { 
-            viewType, 
-            rangeType, 
-            currentOffsetInDescriptors,
-            (viewType == HlslDispatchable::BufferViewType::Structured ? shaderInputDesc.NumSamples : 0)
-        };
+        HlslDispatchable::BufferViewType viewType = HlslDispatchable::BufferViewType::Typed; // default; unused for textures & samplers
+        uint32_t stride = 0;
+        if (!isTexture && rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+        {
+            viewType = GetViewType(shaderInputDesc);
+            stride = (viewType == HlslDispatchable::BufferViewType::Structured ? shaderInputDesc.NumSamples : 0);
+        }
+
+        HlslDispatchable::BindPoint bp = {};
+        bp.viewType = viewType;
+        bp.descriptorType = rangeType;
+    bp.offsetInDescriptorsFromTableStart = (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) ? currentOffsetSampler : currentOffsetCSU;
+        bp.structureByteStride = stride;
+        bp.isTexture = isTexture;
+        bp.srvDimension = srvDim;
+        bindPoints[shaderInputDesc.Name] = bp;
 
         if (rangeType == currentRange.RangeType && shaderInputDesc.Space == currentRange.RegisterSpace)
         {
@@ -118,7 +123,14 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
             currentRange.RegisterSpace = shaderInputDesc.Space;
         }
 
-        currentOffsetInDescriptors += numDescriptors;
+        if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+        {
+            currentOffsetSampler += numDescriptors;
+        }
+        else
+        {
+            currentOffsetCSU += numDescriptors;
+        }
     }
 
     if (currentRange.NumDescriptors > 0)
@@ -140,7 +152,7 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
         THROW_IF_FAILED(m_shaderReflection->GetResourceBindingDesc(resourceIndex, &shaderInputDescs[resourceIndex]));
     }
 
-    auto [descriptorRanges, bindPoints] = ReflectBindingData(shaderInputDescs);
+    auto [allDescriptorRanges, bindPoints] = ReflectBindingData(shaderInputDescs);
     m_bindPoints = bindPoints;
 
 #ifdef _GAMING_XBOX
@@ -149,13 +161,29 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
 #endif
 
     std::vector<D3D12_ROOT_PARAMETER1> rootParameters;
-
-    if (!descriptorRanges.empty())
+    std::vector<D3D12_DESCRIPTOR_RANGE1> csuRanges;
+    std::vector<D3D12_DESCRIPTOR_RANGE1> samplerRanges;
+    for (auto& r : allDescriptorRanges)
     {
+        if (r.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) samplerRanges.push_back(r);
+    else csuRanges.push_back(r);
+    }
+    if (!csuRanges.empty())
+    {
+        m_csuRootParameterIndex = static_cast<int>(rootParameters.size());
         D3D12_ROOT_PARAMETER1 rootParameter = {};
         rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rootParameter.DescriptorTable.NumDescriptorRanges = static_cast<UINT>(descriptorRanges.size());
-        rootParameter.DescriptorTable.pDescriptorRanges = descriptorRanges.data();
+        rootParameter.DescriptorTable.NumDescriptorRanges = static_cast<UINT>(csuRanges.size());
+        rootParameter.DescriptorTable.pDescriptorRanges = csuRanges.data();
+        rootParameters.push_back(rootParameter);
+    }
+    if (!samplerRanges.empty())
+    {
+        m_samplerRootParameterIndex = static_cast<int>(rootParameters.size());
+        D3D12_ROOT_PARAMETER1 rootParameter = {};
+        rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParameter.DescriptorTable.NumDescriptorRanges = static_cast<UINT>(samplerRanges.size());
+        rootParameter.DescriptorTable.pDescriptorRanges = samplerRanges.data();
         rootParameters.push_back(rootParameter);
     }
 
@@ -344,13 +372,40 @@ void HlslDispatchable::CompileWithDxc()
         IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
 
     ComPtr<ID3D12DescriptorHeap> descriptorHeap;
-    D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
-    descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    descriptorHeapDesc.NumDescriptors = static_cast<uint32_t>(m_bindPoints.size());
-    descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(
-        &descriptorHeapDesc, 
-        IID_GRAPHICS_PPV_ARGS(m_descriptorHeap.ReleaseAndGetAddressOf())));
+    // Create descriptor heaps (CSU + optional sampler)
+    uint32_t numCSU = 0; // CBV, SRV, UAV
+    uint32_t numSamplers = 0;
+    for (auto& kv : m_bindPoints)
+    {
+        switch (kv.second.descriptorType)
+        {
+        case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER: numSamplers++; break;
+        case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+        case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+        case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: numCSU++; break;
+        default: break;
+        }
+    }
+    if (numCSU > 0)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
+        descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        descriptorHeapDesc.NumDescriptors = numCSU;
+        descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(
+            &descriptorHeapDesc, 
+            IID_GRAPHICS_PPV_ARGS(m_descriptorHeap.ReleaseAndGetAddressOf())));
+    }
+    if (numSamplers > 0)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDesc = {};
+        samplerHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        samplerHeapDesc.NumDescriptors = numSamplers;
+        samplerHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(
+            &samplerHeapDesc,
+            IID_GRAPHICS_PPV_ARGS(m_samplerDescriptorHeap.ReleaseAndGetAddressOf())));
+    }
 }
 
 void HlslDispatchable::Initialize()
@@ -367,7 +422,8 @@ void HlslDispatchable::Initialize()
 
 void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 {
-    uint32_t descriptorIncrementSize = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    uint32_t descriptorIncrementSizeCSU = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    uint32_t descriptorIncrementSizeSampler = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
     for (auto& binding : bindings)
     {
@@ -379,11 +435,10 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         assert(source.resource != nullptr);
         assert(source.resourceDesc != nullptr);
 
-        if (!std::holds_alternative<Model::BufferDesc>(source.resourceDesc->value))
-        {
-            throw std::invalid_argument("HLSL operators currently only support buffer bindings");
-        }
-        auto& sourceBufferDesc = std::get<Model::BufferDesc>(source.resourceDesc->value);
+        // Validate resource type compatibility lazily per case below (treat all as const; we never mutate descriptors here).
+        const Model::BufferDesc* sourceBufferDescPtr = std::get_if<Model::BufferDesc>(&source.resourceDesc->value);
+        const Model::TextureDesc* sourceTextureDescPtr = std::get_if<Model::TextureDesc>(&source.resourceDesc->value);
+        const Model::SamplerDesc* sourceSamplerDescPtr = std::get_if<Model::SamplerDesc>(&source.resourceDesc->value);
 
         auto& bindPointIterator = m_bindPoints.find(targetName);
         if (bindPointIterator == m_bindPoints.end())
@@ -392,13 +447,25 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         }
         auto& bindPoint = bindPointIterator->second;
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle{
-            m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 
-            static_cast<int>(bindPoint.offsetInDescriptorsFromTableStart), 
-            descriptorIncrementSize
+        auto GetCpuHandle = [&](bool sampler)->CD3DX12_CPU_DESCRIPTOR_HANDLE
+        {
+            if (sampler)
+            {
+                return CD3DX12_CPU_DESCRIPTOR_HANDLE{
+                    m_samplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+                    static_cast<int>(bindPoint.offsetInDescriptorsFromTableStart),
+                    descriptorIncrementSizeSampler};
+            }
+            else
+            {
+                return CD3DX12_CPU_DESCRIPTOR_HANDLE{
+                    m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+                    static_cast<int>(bindPoint.offsetInDescriptorsFromTableStart),
+                    descriptorIncrementSizeCSU};
+            }
         };
 
-        auto FillViewDesc = [&](auto& viewDesc)
+        auto FillBufferOrUavViewDesc = [&](auto& viewDesc)
         {
             viewDesc.Buffer.StructureByteStride = bindPoint.structureByteStride;
             if (source.elementCount > std::numeric_limits<uint32_t>::max())
@@ -417,7 +484,8 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
                 else
                 {
                     // If the binding doesn't specify, assume the data type used to initialize the buffer.
-                    viewDesc.Format = Device::GetDxgiFormatFromDmlTensorDataType(sourceBufferDesc.initialValuesDataType);
+                    assert(sourceBufferDescPtr);
+                    viewDesc.Format = Device::GetDxgiFormatFromDmlTensorDataType(sourceBufferDescPtr->initialValuesDataType);
                 }
             }
             else if (bindPoint.viewType == BufferViewType::Structured)
@@ -435,12 +503,13 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
                     throw std::invalid_argument(fmt::format("'{}' is a raw buffer, so the format must be omitted or R32_TYPELESS.", targetName));
                 }
 
-                if (sourceBufferDesc.sizeInBytes % D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT != 0)
+                assert(sourceBufferDescPtr);
+                if (sourceBufferDescPtr->sizeInBytes % D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT != 0)
                 {
                     throw std::invalid_argument(fmt::format(
                         "Attempting to bind '{}' as a raw buffer, but its size ({} bytes) is not aligned to {} bytes", 
                         source.resourceDesc->name,
-                        sourceBufferDesc.sizeInBytes,
+                        sourceBufferDescPtr->sizeInBytes,
                         D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT));
                 }
 
@@ -456,24 +525,98 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             }
         };
 
-        if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+        auto FillTextureViewDesc = [&](D3D12_SHADER_RESOURCE_VIEW_DESC& viewDesc, const Model::TextureDesc& texDesc, const HlslDispatchable::BindPoint& bp)
         {
+            viewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            viewDesc.Format = texDesc.format;
+            switch (bp.srvDimension)
+            {
+            case D3D_SRV_DIMENSION_TEXTURE2D:
+                // D3D12_SHADER_RESOURCE_VIEW_DESC::ViewDimension uses D3D12_SRV_DIMENSION; cast/explicit enum to avoid mismatch.
+                viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                viewDesc.Texture2D.MipLevels = 1;
+                viewDesc.Texture2D.MostDetailedMip = 0;
+                break;
+            default:
+                throw std::invalid_argument("Only TEXTURE2D SRVs supported in A-C phase");
+            }
+        };
+
+        if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+        {
+            if (!sourceSamplerDescPtr)
+            {
+                throw std::invalid_argument(fmt::format("Binding '{}' expected a sampler resource", targetName));
+            }
+            auto& samp = *sourceSamplerDescPtr;
+            D3D12_SAMPLER_DESC sd = {};
+            sd.Filter = samp.filter;
+            sd.AddressU = samp.addressU;
+            sd.AddressV = samp.addressV;
+            sd.AddressW = samp.addressW;
+            sd.MipLODBias = samp.mipLODBias;
+            sd.MaxAnisotropy = samp.maxAnisotropy;
+            sd.ComparisonFunc = samp.comparisonFunc;
+            memcpy(sd.BorderColor, samp.borderColor, sizeof(float)*4);
+            sd.MinLOD = samp.minLOD;
+            sd.MaxLOD = samp.maxLOD;
+            auto cpuHandle = GetCpuHandle(true);
+            m_device->D3D()->CreateSampler(&sd, cpuHandle);
+        }
+        else if (bindPoint.isTexture)
+        {
+            if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+            {
+                throw std::invalid_argument("RW textures (UAV) not yet supported in A-C phase");
+            }
+
+            // Texture SRV
+            if (!std::holds_alternative<Model::TextureDesc>(source.resourceDesc->value))
+            {
+                throw std::invalid_argument(fmt::format("Binding '{}' expected a texture resource", targetName));
+            }
+            auto& texDesc = std::get<Model::TextureDesc>(source.resourceDesc->value);
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            FillTextureViewDesc(srvDesc, texDesc, bindPoint);
+            auto cpuHandle = GetCpuHandle(false);
+            m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
+        }
+        else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+        {
+            if (!sourceBufferDescPtr)
+            {
+                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (UAV)", targetName));
+            }
+            auto& sourceBufferDesc = *sourceBufferDescPtr;
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            FillViewDesc(uavDesc);
+            FillBufferOrUavViewDesc(uavDesc);
             uavDesc.Buffer.CounterOffsetInBytes = source.counterOffsetBytes;
+            auto cpuHandle = GetCpuHandle(false);
             m_device->D3D()->CreateUnorderedAccessView(source.resource, source.counterResource, &uavDesc, cpuHandle);
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
         {
+            if (!sourceBufferDescPtr && !bindPoint.isTexture)
+            {
+                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (SRV)", targetName));
+            }
+            auto& sourceBufferDesc = *sourceBufferDescPtr; // safe if not texture
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            FillViewDesc(srvDesc);
+            FillBufferOrUavViewDesc(srvDesc);
+            auto cpuHandle = GetCpuHandle(false);
             m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
         {
+            if (!sourceBufferDescPtr)
+            {
+                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (CBV)", targetName));
+            }
+            auto& sourceBufferDesc = *sourceBufferDescPtr;
             if (sourceBufferDesc.sizeInBytes % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT != 0)
             {
                 throw std::invalid_argument(fmt::format(
@@ -493,6 +636,7 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
             cbvDesc.BufferLocation = source.resource->GetGPUVirtualAddress();
             cbvDesc.SizeInBytes = static_cast<uint32_t>(sourceBufferDesc.sizeInBytes);
+            auto cpuHandle = GetCpuHandle(false);
             m_device->D3D()->CreateConstantBufferView(&cbvDesc, cpuHandle);
         }
         else
@@ -503,9 +647,13 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 
     m_device->GetCommandList()->SetComputeRootSignature(m_rootSignature.Get());
     m_device->GetCommandList()->SetPipelineState(m_pipelineState.Get());
-    ID3D12DescriptorHeap* descriptorHeaps[] = { m_descriptorHeap.Get() };
-    m_device->GetCommandList()->SetDescriptorHeaps(ARRAYSIZE(descriptorHeaps), descriptorHeaps);
-    m_device->GetCommandList()->SetComputeRootDescriptorTable(0, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    ID3D12DescriptorHeap* descriptorHeaps[2];
+    UINT heapCount = 0;
+    if (m_descriptorHeap) descriptorHeaps[heapCount++] = m_descriptorHeap.Get();
+    if (m_samplerDescriptorHeap) descriptorHeaps[heapCount++] = m_samplerDescriptorHeap.Get();
+    if (heapCount) m_device->GetCommandList()->SetDescriptorHeaps(heapCount, descriptorHeaps);
+    if (m_csuRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_csuRootParameterIndex, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    if (m_samplerRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_samplerRootParameterIndex, m_samplerDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 }
 
 void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings)

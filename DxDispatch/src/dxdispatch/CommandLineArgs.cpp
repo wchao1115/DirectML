@@ -183,8 +183,7 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             cxxopts::value<bool>()
         )
         // If this option is chosen, DxDispatch's autogeneration of the root signatures is disabled. The root
-        // signatures are expected to be defined through __XBOX_DX12_ROOT_SIGNATURE. When this option is used, 
-        // the `xbox_allow_precompile` option is ignored.
+        // signatures are expected to be defined through __XBOX_DX12_ROOT_SIGNATURE.
         (
             "xbox_rootsig_defined",
             "Disables automatically generating root signatures because the root signatures is already defined through __XBOX_DX12_ROOT_SIGNATURE.",

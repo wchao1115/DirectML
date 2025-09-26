@@ -547,6 +547,79 @@ Microsoft::WRL::ComPtr<ID3D12Resource> Device::Upload(uint64_t totalSize, gsl::s
     return buffer;
 }
 
+Microsoft::WRL::ComPtr<ID3D12Resource> Device::Upload(
+    uint32_t width,
+    uint32_t height,
+    DXGI_FORMAT format,
+    gsl::span<const std::byte> data,
+    std::wstring_view name)
+{
+    // Basic validation for select common formats (skip strict validation for others)
+    uint32_t bpp = 0;
+    switch (format)
+    {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: bpp = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: bpp = 8; break;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: bpp = 16; break;
+    default: bpp = 0; break;
+    }
+    if (!data.empty() && bpp != 0)
+    {
+        size_t expectedSize = static_cast<size_t>(width) * height * bpp;
+        if (data.size() != expectedSize)
+        {
+            throw std::invalid_argument(fmt::format(
+                "Texture initialData size mismatch ({} vs expected {}).", data.size(), expectedSize));
+        }
+    }
+
+    auto resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_NONE);
+    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+    THROW_IF_FAILED(m_d3d->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &resourceDesc,
+        data.empty() ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_GRAPHICS_PPV_ARGS(texture.ReleaseAndGetAddressOf())));
+
+    if (!name.empty())
+    {
+        texture->SetName(std::wstring(name).c_str());
+    }
+
+    if (!data.empty())
+    {
+        size_t uploadSize = GetRequiredIntermediateSize(texture.Get(), 0, 1);
+        auto upload = CreateUploadBuffer(uploadSize, D3D12_RESOURCE_FLAG_NONE);
+        upload->SetName(L"Device::UploadTextureUpload");
+
+        D3D12_SUBRESOURCE_DATA sub = {};
+        sub.pData = data.data();
+        uint32_t effBpp = bpp ? bpp : 4; // fallback guess for row pitch if unknown format
+        sub.RowPitch = width * effBpp;
+        sub.SlicePitch = sub.RowPitch * height;
+
+        UpdateSubresources(GetCommandList(), texture.Get(), upload.Get(), 0, 0, 1, &sub);
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            texture.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        GetCommandList()->ResourceBarrier(1, &barrier);
+        {
+            // Keep the upload buffer alive until the command list executing the copy completes.
+            // ID3D12Resource derives from IUnknown so we can implicitly upcast to IGraphicsUnknown (alias of IUnknown).
+            Microsoft::WRL::ComPtr<IGraphicsUnknown> keepAlive = upload; // no QI required
+            KeepAliveUntilNextCommandListDispatch(std::move(keepAlive));
+        }
+    }
+
+    return texture;
+}
+
 std::vector<std::byte> Device::Download(Microsoft::WRL::ComPtr<ID3D12Resource> buffer)
 {
     if (buffer->GetDesc().Width > std::numeric_limits<size_t>::max())
