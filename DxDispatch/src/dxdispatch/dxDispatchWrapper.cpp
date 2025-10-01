@@ -101,7 +101,7 @@ HRESULT DxDispatch::RuntimeClassInitialize(
     m_pixCaptureHelper = std::make_shared<PixCaptureHelper>(m_options->GetPixCaptureType(), m_options->PixCaptureName());
     m_d3dModule = std::make_shared<D3d12Module>(m_options->DisableAgilitySDK());
     m_dxCoreModule = std::make_shared<DxCoreModule>();
-    m_dmlModule = std::make_shared<DmlModule>();
+    m_dmlModule = std::make_shared<DmlModule>(); // Retained for data type utilities (buffers) even though DML dispatch path removed.
 
     if (m_options->PrintHelp())
     {
@@ -242,26 +242,9 @@ HRESULT DxDispatch::RuntimeClassInitialize(
                 inputPath.value(),
                 outputPath.value())));
         }
-        else if (model.value().extension() == ".onnx")
-        {
-    #ifdef ONNXRUNTIME_NONE
-            throw std::invalid_argument("ONNX dispatchables require ONNX Runtime");
-    #else
-            auto name = model.value().filename().string();
-            m_modelWrapper = std::unique_ptr<ModelWrapper>(
-                new ModelWrapper(
-                    Model(
-                        {}, // resource
-                        { {name, Model::OnnxDispatchableDesc{model.value()}} },  // dispatchables
-                        { {"dispatch", name, Model::DispatchCommand{name, {}, {}} } }, // commands
-                        BucketAllocator{})
-                )
-            );
-    #endif
-        }
         else
         {
-            m_logger->LogError("Expected a .json or .onnx file");
+            m_logger->LogError("Expected a .json file");
             return E_NOTIMPL;
         }
     }

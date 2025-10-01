@@ -133,10 +133,6 @@ add_library(
     src/dxdispatch/Adapter.h
     src/dxdispatch/Device.cpp
     src/dxdispatch/Device.h
-    src/dxdispatch/DmlDispatchable.cpp
-    src/dxdispatch/DmlDispatchable.h
-    src/dxdispatch/DirectMLHelpers/DmlGraphDeserialization.cpp
-    src/dxdispatch/DirectMLHelpers/ApiTraits.cpp
     src/dxdispatch/Executor.cpp
     src/dxdispatch/Executor.h
     src/dxdispatch/CommandLineArgs.cpp
@@ -156,9 +152,7 @@ if(NOT dxcompiler_type STREQUAL None)
     target_sources(dxdispatchImpl PRIVATE src/dxdispatch/HlslDispatchable.cpp)
 endif()
 
-if(NOT onnxruntime_type STREQUAL None)
-    target_sources(dxdispatchImpl PRIVATE src/dxdispatch/OnnxDispatchable.cpp)
-endif()
+# ONNX and DirectML dispatchable paths removed (HLSL only build).
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT dxdispatch)
 
@@ -191,8 +185,6 @@ target_link_libraries(
     pix
     gdk
     wil
-    onnxruntime
-    onnxruntime_extensions
     flatbuffer
 )
 
@@ -345,28 +337,8 @@ if(DXD_TESTS)
         set_tests_properties(test_${model_name} PROPERTIES PASS_REGULAR_EXPRESSION ${expected_output})
     endfunction()
 
-    model_test(dml_convolution_2d "Resource 'output': 6, 8, 12, 14")
-    model_test(dml_convolution_3d "Resource 'output': 4, 4, 4, 4, 4, 4, 4, 4")
-    model_test(dml_cumulative_product "Resource 'Out': 2, 8, 64, 192")
-    model_test(dml_element_wise_add "Resource 'Out': 6, 10, -2")
-    model_test(dml_element_wise_add_npy "Resource 'Out': 2, 4, 6, 8, 10, 12")
-    model_test(dml_element_wise_add1 "Resource 'Out': 6, 10, -0.432332")
-    model_test(dml_element_wise_clip "Resource 'A': -2.5, -2.5, -2, -1, 0, 1, 2, 2.5, 2.5")
-    model_test(dml_element_wise_identity "Resource 'Out': 12, 14, 16")
-    model_test(dml_fill_value_sequence "Resource 'Out': 3.2, 4.7, 6.2, 7.7, 9.2")
-    model_test(dml_join "Resource 'Out': 1, 2, 3, 100, 115, 5, 6, 7, 8, 9")
-    model_test(dml_reduce "Resource 'output': 6, 15, 24")
-    model_test(dml_slice "Resource 'output': 7, 9, 12, 14, 17, 19")
-    model_test(dml_split "Resource 'Out1': 1, 2\nResource 'Out2': 3, 4\nResource 'Out3': 5, 6")
-    model_test(dml_upsample_2d "Resource 'output': 1, 1.25, 1.75, 2, 1.5, 1.75, 2.25, 2.5, 2.5, 2.75, 3.25, 3.5, 3, 3.25, 3.75, 4")
-    model_test(dml_owned_tensors "Resource 'Out': 6, 10, -2")
-    model_test(dml_scalar_union_fp16 "Resource 'output': 2, 2, 3, 4, 4")
     if(NOT dxcompiler_type STREQUAL None)
         model_test(hlsl_add_fp32 "Resource 'Out': 2, 7, 6, 11, 2, 7")
-    endif()
-    if(NOT onnxruntime_type STREQUAL None)
-        model_test(onnx_gemm "Resource 'Out': 22, 28, 34, 40, 46, 60, 74, 88, 70, 92, 114, 136")
-        model_test(onnx_dynamic_shapes "Resource 'deferredY': 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")
     endif()
 endif()
 

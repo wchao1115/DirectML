@@ -121,11 +121,7 @@ namespace JsonParsers
     gsl::span<DML_TENSOR_DESC> ParseDmlTensorDescArray(const rapidjson::Value& value, BucketAllocator& allocator);
     gsl::span<DML_TENSOR_DESC> ParseDmlTensorDescArrayField(const rapidjson::Value& object, std::string_view fieldName, BucketAllocator& allocator, bool required = true, gsl::span<DML_TENSOR_DESC> defaultValue = {});
 
-    // DML_OPERATOR_DESC
-    DML_OPERATOR_DESC* ParseDmlOperatorDesc(const rapidjson::Value& value, bool fused, BucketAllocator& allocator);
-    DML_OPERATOR_DESC* ParseDmlOperatorDescField(const rapidjson::Value& object, std::string_view fieldName, bool fused, BucketAllocator& allocator, bool required = true, DML_OPERATOR_DESC* defaultValue = nullptr);
-    gsl::span<DML_OPERATOR_DESC> ParseDmlOperatorDescArray(const rapidjson::Value& value, bool fused, BucketAllocator& allocator);
-    gsl::span<DML_OPERATOR_DESC> ParseDmlOperatorDescArrayField(const rapidjson::Value& object, std::string_view fieldName, bool fused, BucketAllocator& allocator, bool required = true, gsl::span<DML_OPERATOR_DESC> defaultValue = {});
+    // (Removed) DML_OPERATOR_DESC parsing for HLSL-only path.
 
     // ------------------------------------------------------------------------
     // MODEL STRUCTS

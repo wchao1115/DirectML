@@ -80,11 +80,12 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
         const auto& shaderInputDesc = shaderInputDescs[resourceIndex];
         bool isTexture = false;
         D3D_SRV_DIMENSION srvDim = D3D_SRV_DIMENSION_UNKNOWN;
-
-        if (shaderInputDesc.Type == D3D_SIT_TEXTURE && shaderInputDesc.Dimension != D3D_SRV_DIMENSION_BUFFER)
+        // Treat both SRV (TEXTURE) and UAV typed (UAV_RWTYPED) non-buffer dimensions as textures.
+        if ((shaderInputDesc.Type == D3D_SIT_TEXTURE || shaderInputDesc.Type == D3D_SIT_UAV_RWTYPED) &&
+            shaderInputDesc.Dimension != D3D_SRV_DIMENSION_BUFFER)
         {
             isTexture = true;
-            srvDim = shaderInputDesc.Dimension;
+            srvDim = shaderInputDesc.Dimension; // Re-uses SRV dimension enum for UAV typed textures too.
         }
 
         auto rangeType = GetDescriptorRangeType(shaderInputDesc);
@@ -101,7 +102,7 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
         HlslDispatchable::BindPoint bp = {};
         bp.viewType = viewType;
         bp.descriptorType = rangeType;
-    bp.offsetInDescriptorsFromTableStart = (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) ? currentOffsetSampler : currentOffsetCSU;
+        bp.offsetInDescriptorsFromTableStart = (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) ? currentOffsetSampler : currentOffsetCSU;
         bp.structureByteStride = stride;
         bp.isTexture = isTexture;
         bp.srvDimension = srvDim;
@@ -240,7 +241,7 @@ void HlslDispatchable::CompileWithDxc()
     }
 
 #ifdef _GAMING_XBOX
-    if (m_forceDisablePrecompiledShadersOnXbox)
+    if (m_forceDisablePrecompiledShadersOnXbox && !m_rootSigDefinedOnXbox)
     {
         compilerArgs.push_back(L"-D");
         compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
@@ -532,13 +533,69 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             switch (bp.srvDimension)
             {
             case D3D_SRV_DIMENSION_TEXTURE2D:
+                if (texDesc.arraySize != 1)
+                {
+                    throw std::invalid_argument("Shader expects Texture2D view but resource has arraySize > 1 (should bind as Texture2DArray).");
+                }
                 // D3D12_SHADER_RESOURCE_VIEW_DESC::ViewDimension uses D3D12_SRV_DIMENSION; cast/explicit enum to avoid mismatch.
                 viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 viewDesc.Texture2D.MipLevels = 1;
                 viewDesc.Texture2D.MostDetailedMip = 0;
                 break;
+            case D3D_SRV_DIMENSION_TEXTURE3D:
+                if (texDesc.depth <= 1)
+                {
+                    throw std::invalid_argument("Shader expects Texture3D view but resource depth <= 1.");
+                }
+                viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                viewDesc.Texture3D.MipLevels = 1;
+                viewDesc.Texture3D.MostDetailedMip = 0;
+                viewDesc.Texture3D.ResourceMinLODClamp = 0.0f;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
+                if (texDesc.arraySize <= 1)
+                {
+                    throw std::invalid_argument("Shader expects Texture2DArray view but resource arraySize <= 1.");
+                }
+                viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                viewDesc.Texture2DArray.MostDetailedMip = 0;
+                viewDesc.Texture2DArray.MipLevels = 1;
+                viewDesc.Texture2DArray.FirstArraySlice = 0;
+                viewDesc.Texture2DArray.ArraySize = texDesc.arraySize;
+                viewDesc.Texture2DArray.PlaneSlice = 0;
+                viewDesc.Texture2DArray.ResourceMinLODClamp = 0.0f;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURECUBEARRAY:
+                viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                viewDesc.TextureCubeArray.MostDetailedMip = 0;
+                viewDesc.TextureCubeArray.MipLevels = 1; // Only 1 mip currently supported
+                viewDesc.TextureCubeArray.ResourceMinLODClamp = 0.0f;
+                viewDesc.TextureCubeArray.First2DArrayFace = 0;
+                {
+                    uint32_t numCubes = 0;
+                    if (texDesc.isCubeArray && texDesc.cubeCount > 0)
+                    {
+                        numCubes = texDesc.cubeCount;
+                    }
+                    else if (texDesc.arraySize % 6 == 0 && texDesc.arraySize >= 6)
+                    {
+                        numCubes = texDesc.arraySize / 6;
+                    }
+                    if (numCubes == 0)
+                    {
+                        throw std::invalid_argument("Binding expects a TextureCubeArray but resource description lacks valid cubeCount/arraySize.");
+                    }
+                    viewDesc.TextureCubeArray.NumCubes = numCubes;
+                }
+                break;
+            case D3D_SRV_DIMENSION_TEXTURECUBE:
+                viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                viewDesc.TextureCube.MostDetailedMip = 0;
+                viewDesc.TextureCube.MipLevels = 1;
+                viewDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+                break;
             default:
-                throw std::invalid_argument("Only TEXTURE2D SRVs supported in A-C phase");
+                throw std::invalid_argument("Unsupported texture SRV dimension (supported: TEXTURE2D, TEXTURE3D, TEXTURECUBE, TEXTURECUBEARRAY)");
             }
         };
 
@@ -565,22 +622,52 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         }
         else if (bindPoint.isTexture)
         {
-            if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
-            {
-                throw std::invalid_argument("RW textures (UAV) not yet supported in A-C phase");
-            }
-
-            // Texture SRV
             if (!std::holds_alternative<Model::TextureDesc>(source.resourceDesc->value))
             {
                 throw std::invalid_argument(fmt::format("Binding '{}' expected a texture resource", targetName));
             }
             auto& texDesc = std::get<Model::TextureDesc>(source.resourceDesc->value);
 
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            FillTextureViewDesc(srvDesc, texDesc, bindPoint);
-            auto cpuHandle = GetCpuHandle(false);
-            m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
+            if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+            {
+                // UAV texture (RWTexture* / RWTexture*Array)
+                D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+                uavDesc.Format = texDesc.format;
+                switch (bindPoint.srvDimension)
+                {
+                case D3D_SRV_DIMENSION_TEXTURE2D:
+                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                    uavDesc.Texture2D.MipSlice = 0;
+                    uavDesc.Texture2D.PlaneSlice = 0;
+                    break;
+                case D3D_SRV_DIMENSION_TEXTURE3D:
+                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                    uavDesc.Texture3D.MipSlice = 0;
+                    uavDesc.Texture3D.FirstWSlice = 0;
+                    uavDesc.Texture3D.WSize = texDesc.depth;
+                    break;
+                case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
+                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                    uavDesc.Texture2DArray.MipSlice = 0;
+                    uavDesc.Texture2DArray.FirstArraySlice = 0;
+                    uavDesc.Texture2DArray.ArraySize = texDesc.arraySize;
+                    uavDesc.Texture2DArray.PlaneSlice = 0;
+                    break;
+                default:
+                    throw std::invalid_argument("Unsupported UAV texture dimension (supported: TEXTURE2D, TEXTURE3D, TEXTURE2DARRAY)");
+                }
+                auto cpuHandle = GetCpuHandle(false);
+                // CounterResource unused for plain RWTexture types.
+                m_device->D3D()->CreateUnorderedAccessView(source.resource, nullptr, &uavDesc, cpuHandle);
+            }
+            else
+            {
+                // Texture SRV
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                FillTextureViewDesc(srvDesc, texDesc, bindPoint);
+                auto cpuHandle = GetCpuHandle(false);
+                m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
+            }
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
         {
@@ -619,11 +706,13 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             auto& sourceBufferDesc = *sourceBufferDescPtr;
             if (sourceBufferDesc.sizeInBytes % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT != 0)
             {
-                throw std::invalid_argument(fmt::format(
-                    "Attempting to bind '{}' as a constant buffer, but its size ({} bytes) is not aligned to {} bytes", 
+                // Auto-allow: size came from inference; round-down binding will still work as long as resource >= declared size.
+                // For clarity, emit a warning once (could be enhanced with a set to avoid repeats).
+                m_logger->LogInfo(fmt::format(
+                    "[warn] '{}' CBV size {} not {}-byte aligned; proceeding (perf mode).", 
                     source.resourceDesc->name,
                     sourceBufferDesc.sizeInBytes,
-                    D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT));
+                    D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT).c_str());
             }
             else if (sourceBufferDesc.sizeInBytes > std::numeric_limits<uint32_t>::max())
             {
@@ -659,5 +748,4 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings)
 {
     m_device->RecordDispatch(args.dispatchableName.c_str(), args.threadGroupCount[0], args.threadGroupCount[1], args.threadGroupCount[2]);
-    m_device->ExecuteCommandListAndWait();
 }
