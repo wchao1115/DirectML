@@ -4,18 +4,15 @@
 #include "BucketAllocator.h"
 #include "Model.h"
 #include "Dispatchable.h"
-#include "DmlDispatchable.h"
 #ifndef DXCOMPILER_NONE
 #include "HlslDispatchable.h"
-#endif
-#ifndef ONNXRUNTIME_NONE
-#include "OnnxDispatchable.h"
 #endif
 #include "StdSupport.h"
 #include "NpyReaderWriter.h"
 #include "ImageReaderWriter.h"
 #include "CommandLineArgs.h"
 #include "Executor.h"
+#include "Defaults.h"
 #include <half.hpp>
 
 using Microsoft::WRL::ComPtr;
@@ -127,7 +124,39 @@ Executor::Executor(Model& model, std::shared_ptr<Device> device, const CommandLi
             else if (std::holds_alternative<Model::TextureDesc>(desc.value))
             {
                 auto& texDesc = std::get<Model::TextureDesc>(desc.value);
-                m_resources[desc.name] = std::move(device->Upload(texDesc.width, texDesc.height, texDesc.format, texDesc.initialData, wName));
+                if (texDesc.depth > 1)
+                {
+                    // 3D volume texture
+                    m_resources[desc.name] = std::move(device->Upload3D(
+                        texDesc.width, texDesc.height, texDesc.depth,
+                        texDesc.format, texDesc.mipLevels, texDesc.allowUav,
+                        texDesc.initialData, wName));
+                }
+                else
+                {
+                    // Map TextureDesc to extended Upload parameters for 2D / array / cube
+                    uint32_t underlyingArraySize = 1;
+                    bool isCube = false;
+                    if (texDesc.isCube)
+                    {
+                        isCube = true;
+                        underlyingArraySize = 6; // 1 cube = 6 faces
+                    }
+                    else if (texDesc.isCubeArray)
+                    {
+                        isCube = true; // resource is created as array of cube faces
+                        underlyingArraySize = texDesc.cubeCount * 6;
+                    }
+                    else
+                    {
+                        underlyingArraySize = texDesc.arraySize; // currently 1
+                    }
+                    m_resources[desc.name] = std::move(device->Upload(
+                        texDesc.width, texDesc.height, texDesc.format,
+                        underlyingArraySize, texDesc.mipLevels, isCube,
+                        texDesc.allowUav,
+                        texDesc.initialData, wName));
+                }
             }
             else if (std::holds_alternative<Model::SamplerDesc>(desc.value))
             {
@@ -143,51 +172,13 @@ Executor::Executor(Model& model, std::shared_ptr<Device> device, const CommandLi
     {
         try
         {
-            if (std::holds_alternative<Model::HlslDispatchableDesc>(desc.value))
-            {
 #ifdef DXCOMPILER_NONE
-                throw std::invalid_argument("HLSL dispatchables require DXCompiler");
+            throw std::invalid_argument("HLSL dispatchables require DXCompiler");
 #else
-                m_dispatchables[desc.name] = std::make_unique<HlslDispatchable>(device, std::get<Model::HlslDispatchableDesc>(desc.value), args, m_logger.Get());
+            m_dispatchables[desc.name] = std::make_unique<HlslDispatchable>(device, std::get<Model::HlslDispatchableDesc>(desc.value), args, m_logger.Get());
 #endif
-            }
-            else if (std::holds_alternative<Model::OnnxDispatchableDesc>(desc.value))
-            {
-#ifdef ONNXRUNTIME_NONE
-                throw std::invalid_argument("ONNX dispatchables require ONNX Runtime");
-#else
-                m_dispatchables[desc.name] = std::make_unique<OnnxDispatchable>(device, std::get<Model::OnnxDispatchableDesc>(desc.value), args, m_logger.Get());
-#endif
-            }
-            else if (std::holds_alternative<Model::DmlSerializedGraphDispatchableDesc>(desc.value)) 
-            {
-                auto& dmlSerializedGraphDispatchableDesc = std::get<Model::DmlSerializedGraphDispatchableDesc>(desc.value);
-
-                m_dispatchables[desc.name] = std::make_unique<DmlDispatchable>(
-                    desc.name, 
-                    device, 
-                    dmlSerializedGraphDispatchableDesc, 
-                    m_logger.Get());
-            }
-            else
-            {
-                auto& dmlDispatchableDesc = std::get<Model::DmlDispatchableDesc>(desc.value);
-
-                Dispatchable::Bindings initBindings;
-                try
-                {
-                    initBindings = ResolveBindings(dmlDispatchableDesc.initBindings);
-                }
-                catch (const std::exception& e)
-                {
-                    m_logger->LogError(fmt::format("Failed to resolve bindings: {}", e.what()).c_str());
-                    return;
-                }
-
-                m_dispatchables[desc.name] = std::make_unique<DmlDispatchable>(desc.name, device, dmlDispatchableDesc, initBindings, m_logger.Get());
-            }
         }
-        catch(const std::exception& e)
+        catch (const std::exception& e)
         {
             throw std::invalid_argument(fmt::format("ERROR creating dispatchable '{}': {}", desc.name, e.what()));
         }
@@ -288,7 +279,7 @@ void Executor::operator()(const Model::DispatchCommand& command)
     auto& dispatchable = m_dispatchables[command.dispatchableName];
 
     Timings cpuTimings;
-    Timings gpuTimings;
+    // GPU timings are deferred; we do not resolve timestamps here anymore.
 
     Dispatchable::Bindings bindings;
     try
@@ -362,40 +353,19 @@ void Executor::operator()(const Model::DispatchCommand& command)
 
     auto cpuStats = cpuTimings.ComputeStats(m_commandLineArgs.MaxWarmupSamples());
 
-    // GPU timings are capped at a fixed size ring buffer. The first samples may have been 
-    // overwritten, in which case the warmup samples are dropped.
-    gpuTimings.rawSamples = m_device->ResolveTimingSamples();
-    assert(cpuTimings.rawSamples.size() >= gpuTimings.rawSamples.size());
-    auto gpuSamplesOverwritten =  static_cast<uint32_t>(gpuTimings.rawSamples.empty() ? 0 : cpuTimings.rawSamples.size() - gpuTimings.rawSamples.size());
-    auto gpuStats = gpuTimings.ComputeStats(std::max(m_commandLineArgs.MaxWarmupSamples(), gpuSamplesOverwritten) - gpuSamplesOverwritten);
-
     if (iterationsCompleted > 0)
     {
         if (m_commandLineArgs.GetTimingVerbosity() == TimingVerbosity::Basic)
         {
-            if (gpuTimings.rawSamples.empty())
-            {
-                m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations, {:.4f} ms median (CPU)",
-                    command.dispatchableName, 
-                    iterationsCompleted,
-                    cpuStats.hot.median
-                ).c_str());
-            }
-            else
-            {
-                m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations, {:.4f} ms median (CPU), {:.6f} ms median (GPU)",
-                    command.dispatchableName, 
-                    iterationsCompleted,
-                    cpuStats.hot.median,
-                    gpuStats.hot.median
-                ).c_str());
-            }
+            m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations, {:.4f} ms median (CPU)",
+                command.dispatchableName,
+                iterationsCompleted,
+                cpuStats.hot.median
+            ).c_str());
         }
         else
         {
-            m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations",
-                command.dispatchableName, iterationsCompleted
-            ).c_str());
+            m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations", command.dispatchableName, iterationsCompleted).c_str());
 
             if (cpuStats.cold.count > 0)
             {
@@ -403,14 +373,6 @@ void Executor::operator()(const Model::DispatchCommand& command)
                     cpuStats.cold.count, cpuStats.cold.average, cpuStats.cold.min, cpuStats.cold.median, cpuStats.cold.max
                 ).c_str());
             }
-
-            if (gpuStats.cold.count > 0)
-            {
-                m_logger->LogInfo(fmt::format("GPU Timings (Cold) : {} samples, {:.4f} ms average, {:.4f} ms min, {:.4f} ms median, {:.4f} ms max",
-                    gpuStats.cold.count, gpuStats.cold.average, gpuStats.cold.min, gpuStats.cold.median, gpuStats.cold.max
-                ).c_str());
-            }
-
             if (cpuStats.hot.count > 0)
             {
                 m_logger->LogInfo(fmt::format("CPU Timings (Hot)  : {} samples, {:.4f} ms average, {:.4f} ms min, {:.4f} ms median, {:.4f} ms max",
@@ -418,41 +380,61 @@ void Executor::operator()(const Model::DispatchCommand& command)
                 ).c_str());
             }
 
+            if (m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::All)
+            {
+                m_logger->LogInfo("The timings of each iteration: ");
+                for (uint32_t i = 0; i < iterationsCompleted; ++i)
+                {
+                    m_logger->LogInfo(fmt::format("iteration {}: {:.4f} ms (CPU)", i, cpuTimings.rawSamples[i]).c_str());
+                }
+            }
+        }
+    }
+}
+
+void Executor::operator()(const Model::ResolveGpuTimeCommand& /*command*/)
+{
+    // Submit recorded work and resolve GPU timestamps.
+    try
+    {
+        Timings gpuTimings;
+        gpuTimings.rawSamples = m_device->ResolveTimingSamples();
+        if (gpuTimings.rawSamples.empty())
+        {
+            m_logger->LogInfo("GPU timing: no samples recorded.");
+            return;
+        }
+        auto gpuStats = gpuTimings.ComputeStats(m_commandLineArgs.MaxWarmupSamples());
+        if (m_commandLineArgs.GetTimingVerbosity() == TimingVerbosity::Basic)
+        {
+            m_logger->LogInfo(fmt::format("GPU Timing: {} samples, {:.6f} ms median", gpuStats.hot.count, gpuStats.hot.median).c_str());
+        }
+        else
+        {
+            if (gpuStats.cold.count > 0)
+            {
+                m_logger->LogInfo(fmt::format("GPU Timings (Cold) : {} samples, {:.6f} ms average, {:.6f} ms min, {:.6f} ms median, {:.6f} ms max",
+                    gpuStats.cold.count, gpuStats.cold.average, gpuStats.cold.min, gpuStats.cold.median, gpuStats.cold.max).c_str());
+            }
             if (gpuStats.hot.count > 0)
             {
-                m_logger->LogInfo(fmt::format("GPU Timings (Hot)  : {} samples, {:.4f} ms average, {:.4f} ms min, {:.4f} ms median, {:.4f} ms max",
-                    gpuStats.hot.count, gpuStats.hot.average, gpuStats.hot.min, gpuStats.hot.median, gpuStats.hot.max
-                ).c_str());
+                m_logger->LogInfo(fmt::format("GPU Timings (Hot)  : {} samples, {:.6f} ms average, {:.6f} ms min, {:.6f} ms median, {:.6f} ms max",
+                    gpuStats.hot.count, gpuStats.hot.average, gpuStats.hot.min, gpuStats.hot.median, gpuStats.hot.max).c_str());
             }
-
-            if (gpuSamplesOverwritten > 0)
+            if (m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::All)
             {
-                m_logger->LogInfo(fmt::format("GPU samples buffer has {} samples overwritten.", gpuSamplesOverwritten).c_str());
-            }
-        }
-
-        if (m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::All)
-        {
-            m_logger->LogInfo("The timings of each iteration: ");
-
-            for (uint32_t i = 0; i < iterationsCompleted; ++i)
-            {
-                if (i < gpuSamplesOverwritten || gpuTimings.rawSamples.empty())
+                m_logger->LogInfo("GPU per-sample timings:");
+                for (size_t i = 0; i < gpuTimings.rawSamples.size(); ++i)
                 {
-                    // GPU samples are limited to a fixed size, so the initial iterations
-                    // may not have timing information (overwritten timestamps).
-                    m_logger->LogInfo(fmt::format("iteration {}: {:.4f} ms (CPU)",
-                        i, cpuTimings.rawSamples[i]
-                    ).c_str());
-                }
-                else
-                {
-                    m_logger->LogInfo(fmt::format("iteration {}: {:.4f} ms (CPU), {:.4f} ms (GPU)",
-                        i, cpuTimings.rawSamples[i], gpuTimings.rawSamples[i - gpuSamplesOverwritten]
-                    ).c_str());
+                    m_logger->LogInfo(fmt::format("gpu iteration {}: {:.6f} ms", i, gpuTimings.rawSamples[i]).c_str());
                 }
             }
         }
+    }
+    catch (const std::exception& e)
+    {
+        m_logger->LogError(fmt::format("Failed to resolve GPU timings: {}", e.what()).c_str());
+        throw;
     }
 }
 
@@ -730,9 +712,57 @@ Dispatchable::Bindings Executor::ResolveBindings(const Model::Bindings& modelBin
 
         for (auto& modelSource : modelBinding.second)
         {
-            // Validated when the model is constructed.
-            assert(m_resources.find(modelSource.name) != m_resources.end());
-            auto& resourceDesc = m_model.GetResource(modelSource.name);
+            const Model::ResourceDesc* resourceDescPtr = nullptr;
+            auto existing = m_resources.find(modelSource.name);
+            if (existing == m_resources.end())
+            {
+                // Attempt inference: only simple buffer resources currently.
+                uint64_t elementSize = modelSource.elementSizeInBytes ? modelSource.elementSizeInBytes : dxdispatch::defaults::kInferredElementSizeBytes;
+                if (modelSource.elementCount == 0)
+                {
+                    throw std::invalid_argument(fmt::format(
+                        "Cannot infer resource '{}' (missing elementCount). Provide resources entry or elementCount/elementSizeInBytes in binding.",
+                        modelSource.name));
+                }
+                uint64_t sizeInBytes = elementSize * modelSource.elementCount;
+                // For simplicity & CBV compatibility (perf testing focus), align every inferred buffer to CBV alignment.
+                sizeInBytes = dxdispatch::defaults::AlignUp(sizeInBytes, dxdispatch::defaults::kConstantBufferAlignment);
+                // Create inferred buffer descriptor.
+                Model::BufferDesc bufDesc{ sizeInBytes, /*initialValues*/{}, dxdispatch::defaults::kInferredDataType, 0, false };
+                Model::ResourceDesc resDesc{ modelSource.name, std::variant<Model::BufferDesc, Model::TextureDesc, Model::SamplerDesc>{std::move(bufDesc)} };
+                m_inferredResourceDescs.push_back(std::move(resDesc));
+                resourceDescPtr = &m_inferredResourceDescs.back();
+                auto wName = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(modelSource.name);
+                m_resources[modelSource.name] = std::move(m_device->Upload(sizeInBytes, m_inferredResourceDescs.back().value.index()==0 ? std::get<Model::BufferDesc>(m_inferredResourceDescs.back().value).initialValues : std::vector<std::byte>{}, wName));
+                if (dxdispatch::defaults::kLogInferredResources && m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::Extended)
+                {
+                    m_logger->LogInfo(fmt::format("[inferred] Created buffer '{}' ({} bytes)", modelSource.name, sizeInBytes).c_str());
+                }
+            }
+            else
+            {
+                // Look up in original model resources.
+                // Try model's resource map; if absent there but present in inferred map, we'll locate later.
+                if (auto it = m_model.GetResourceDescs().begin(); true)
+                {
+                    // Direct lookup via model's internal map (throws if not found) wrapped in try/catch for clarity.
+                    try { resourceDescPtr = &m_model.GetResource(modelSource.name); }
+                    catch (...) { /* leave null, will search inferred below */ }
+                }
+                if (!resourceDescPtr)
+                {
+                    // Search inferred list.
+                    for (auto& r : m_inferredResourceDescs)
+                    {
+                        if (r.name == modelSource.name) { resourceDescPtr = &r; break; }
+                    }
+                }
+            }
+            if (!resourceDescPtr)
+            {
+                throw std::invalid_argument(fmt::format("Internal error: failed to locate resource descriptor for '{}'", modelSource.name));
+            }
+            auto& resourceDesc = *resourceDescPtr;
 
             Dispatchable::BindingSource source = {};
             source.elementSizeInBytes = modelSource.elementSizeInBytes;
@@ -740,7 +770,7 @@ Dispatchable::Bindings Executor::ResolveBindings(const Model::Bindings& modelBin
             source.elementOffset = modelSource.elementOffset;
             source.format = modelSource.format;
             source.resource = m_resources[modelSource.name].Get();
-            source.resourceDesc = &resourceDesc;
+            source.resourceDesc = resourceDescPtr;
             source.shape = modelSource.shape;
 
             if (std::holds_alternative<Model::BufferDesc>(resourceDesc.value))

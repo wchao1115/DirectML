@@ -38,16 +38,7 @@ Model::Model(
     for (auto& dispatchableDesc : m_dispatchableDescs) 
     { 
         m_dispatchableDescsByName[dispatchableDesc.name] = &dispatchableDesc;
-        
-        if (std::holds_alternative<DmlDispatchableDesc>(dispatchableDesc.value))
-        {
-            VerifyBindings("DML", std::get<DmlDispatchableDesc>(dispatchableDesc.value).initBindings, m_resourceDescsByName);
-        }
-        else if (std::holds_alternative<DmlSerializedGraphDispatchableDesc>(dispatchableDesc.value))
-        {
-            VerifyBindings("DmlSerializedGraph", std::get<DmlSerializedGraphDispatchableDesc>(dispatchableDesc.value).initBindings, m_resourceDescsByName);
-        }
-
+        // (Previously validated DML/ONNX init bindings here – removed for HLSL-only path.)
     }
 
     // Validate references to ops/resources in the model.
@@ -103,6 +94,10 @@ Model::Model(
                             "Command attempts to write to a file the resource '{}', which does not exist in the model", 
                             writeFileCommand.resourceName));
                     }
+                },
+                [&](ResolveGpuTimeCommand&)
+                {
+                    // No references to validate; acts as a synchronization/timing command only.
                 }
             },
             command);

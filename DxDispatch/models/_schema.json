@@ -4,7 +4,7 @@
     "title": "Model",
     "description": "A model file",
     "type": "object",
-    "required": [ "resources", "dispatchables", "commands" ],
+    "required": [ "dispatchables", "commands" ],
 
     "properties": 
     {
@@ -17,7 +17,7 @@
         "dispatchables": 
         {
             "type": "object",
-            "description": "Compute programs available for execution",
+            "description": "Compute programs (HLSL only) available for execution",
             "patternProperties": { ".*": { "$ref": "#/$defs/dispatchable" } }
         },
         "commands": 
@@ -61,29 +61,7 @@
             ]
         },
 
-        "dmlExecutionFlags": 
-        {
-            "enum": 
-            [
-                "DML_EXECUTION_FLAG_NONE",
-                "NONE",
-                "DML_EXECUTION_FLAG_ALLOW_HALF_PRECISION_COMPUTATION",
-                "ALLOW_HALF_PRECISION_COMPUTATION",
-                "DML_EXECUTION_FLAG_DISABLE_META_COMMANDS",
-                "DISABLE_META_COMMANDS",
-                "DML_EXECUTION_FLAG_DESCRIPTORS_VOLATILE",
-                "DESCRIPTORS_VOLATILE"
-            ]
-        },
-
-        "dmlCompileType":
-        {
-            "enum":
-            [
-                "DmlCompileOp",
-                "DmlCompileGraph"
-            ]
-        },
+        
 
         "arrayInitializer":
         {
@@ -182,10 +160,12 @@
                 "width": { "type": "integer", "minimum": 1, "description": "Texture width in texels" },
                 "height": { "type": "integer", "minimum": 1, "description": "Texture height in texels" },
                 "format": { "type": "string", "description": "DXGI_FORMAT (defaults to R8G8B8A8_UNORM if omitted)" },
-                "dimension": { "type": "string", "enum": ["2D"], "description": "Texture dimension (currently only 2D supported)", "default": "2D" },
+                "dimension": { "type": "string", "enum": ["2D","3D","Cube","CubeArray"], "description": "Texture dimension", "default": "2D" },
+                "depth": { "type": "integer", "minimum": 1, "description": "Texture depth in texels (only for 3D)" },
                 "mipLevels": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Number of mip levels (currently must be 1)", "default": 1 },
-                "arraySize": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Array size (currently must be 1)", "default": 1 },
-                "usage": { "type": "string", "enum": ["srv"], "description": "Intended binding usage (currently only 'srv')", "default": "srv" },
+                "arraySize": { "type": "integer", "minimum": 1, "description": "Array size (for 2DArray or CubeArray physical faces)" , "default": 1 },
+                "cubeCount": { "type": "integer", "minimum": 1, "description": "Logical cube count for CubeArray (faces = cubeCount*6)" },
+                "usage": { "type": "string", "enum": ["srv","uav","srv_uav"], "description": "Binding usage: srv (sample/read), uav (read/write), srv_uav (both)" , "default": "srv" },
                 "initialValues": {
                     "description": "Optional initial data: object with sourcePath or raw byte array",
                     "oneOf": [
@@ -195,6 +175,9 @@
                 }
             },
             "required": ["width", "height"],
+            "allOf": [
+                { "if": { "properties": { "dimension": { "const": "3D" } } }, "then": { "required": ["depth"], "properties": { "arraySize": { "const": 1 }, "cubeCount": false } } }
+            ],
             "additionalProperties": true
         },
 
@@ -256,89 +239,15 @@
             "required": [ "sourcePath", "compiler", "compilerArgs" ]
         },
         
-        "dmlDispatchable": 
-        {
-            "type": "object",
-            "properties": 
-            {
-                "desc": 
-                { 
-                    "type": "object",
-                    "description": "The DML_OPERATOR_DESC"
-                },
-                "executionFlags":
-                {
-                    "type": "array",
-                    "items": { "$ref": "#/$defs/dmlExecutionFlags" },
-                    "description": "A list of DML_EXECUTION_FLAGS values",
-                    "default": ["NONE"]
-                }
-            },
-            "required": [ "desc" ]
-        },
-
-        "onnxDispatchable": 
-        {
-            "type": "object",
-            "properties": 
-            {
-                "sourcePath": 
-                {
-                    "type": "string",
-                    "description": "Path to the ONNX model file"
-                },
-                "freeDimensionNameOverrides": 
-                { 
-                    "type": "object",
-                    "description": "Dictionary of dimension names to override. Each member (symbolic dimension name) should map to an integer."
-                },
-                "freeDimensionDenotationOverrides": 
-                { 
-                    "type": "object",
-                    "description": "Dictionary of denotation names to override. Each member (denotation name) should map to an integer."
-                },
-                "sessionOptionsConfigEntries": 
-                { 
-                    "type": "object",
-                    "description": "Dictionary of config entries for SessionOptions. Each member (key) should map to string (value)."
-                },
-                "graphOptimizationLevel": 
-                {
-                    "type": "integer",
-                    "description": "OrtGraphOptimizationLevel. 0 = None, 1 = Basic, 2 = Extended, 99 = All.",
-                    "default": 99
-                },
-                "loggingLevel": 
-                {
-                    "type": "integer",
-                    "description": "OrtLoggingLevel. 0 = Verbose, 1 = Info, 2 = Warning, 3 = Error, 4 = Fatal.",
-                    "default": 2
-                }
-            },
-            "required": [ "sourcePath" ]
-        },
-
         "dispatchable": 
         {
             "type": "object",
             "properties":
             {
-                "type": 
-                {
-                    "type": "string",
-                    "description": "The type of dispatchable"
-                }
+                "type": { "type": "string", "enum": ["hlsl"], "description": "(Deprecated) Must be 'hlsl' if present" }
             },
-            "required": ["type"],
-            "if": { "properties": { "type": { "const": "hlsl" } } },
-            "then": { "$ref": "#/$defs/hlslDispatchable" },
-            "else": { 
-                "if": { "properties": { "type": { "const": "onnx" } } },
-                "then": { "$ref": "#/$defs/onnxDispatchable" },
-                "else": { 
-                    "$ref": "#/$defs/dmlDispatchable" 
-                }
-            }
+            "required": [],
+            "allOf": [ { "$ref": "#/$defs/hlslDispatchable" } ]
         },
         
         "binding": 
@@ -459,7 +368,7 @@
                 "type": 
                 {
                     "type": "string",
-                    "enum": ["dispatch", "print"],
+                    "enum": ["dispatch", "print", "writeFile", "resolveGpuTime"],
                     "description": "The type of command"
                 }
             },
@@ -473,6 +382,14 @@
                 {
                     "if": { "properties": { "type": { "const": "print" } } },
                     "then": { "$ref": "#/$defs/printCommand" }
+                },
+                {
+                    "if": { "properties": { "type": { "const": "writeFile" } } },
+                    "then": { "$ref": "#/$defs/printCommand" }
+                },
+                {
+                    "if": { "properties": { "type": { "const": "resolveGpuTime" } } },
+                    "then": { "type": "object" }
                 }
             ]
         }

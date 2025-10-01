@@ -935,41 +935,6 @@ gsl::span<DML_TENSOR_DESC> ParseDmlTensorDescArrayField(const rapidjson::Value& 
 }
 
 // ----------------------------------------------------------------------------
-// DML_OPERATOR_DESC
-// ----------------------------------------------------------------------------
-
-DML_OPERATOR_DESC* ParseDmlOperatorDescField(const rapidjson::Value& object, std::string_view fieldName, bool fused, BucketAllocator& allocator, bool required, DML_OPERATOR_DESC* defaultValue)
-{
-    return ParseFieldHelper<DML_OPERATOR_DESC*>(object, fieldName, required, defaultValue, [=,&allocator](auto& value){ 
-        return ParseDmlOperatorDesc(value, fused, allocator); 
-    });
-}
-
-gsl::span<DML_OPERATOR_DESC> ParseDmlOperatorDescArray(const rapidjson::Value& value, bool fused, BucketAllocator& allocator)
-{
-    if (value.GetType() != rapidjson::Type::kArrayType)
-    {
-        throw std::invalid_argument("Expected an array.");
-    }
-
-    auto valueArray = value.GetArray();
-    auto outputElements = allocator.Allocate<DML_OPERATOR_DESC>(valueArray.Size());
-    for (uint32_t i = 0; i < valueArray.Size(); i++)
-    {
-        outputElements[i] = *ParseDmlOperatorDesc(valueArray[i], fused, allocator);
-    }
-
-    return gsl::make_span(outputElements, valueArray.Size());
-}
-
-gsl::span<DML_OPERATOR_DESC> ParseDmlOperatorDescArrayField(const rapidjson::Value& object, std::string_view fieldName, bool fused, BucketAllocator& allocator, bool required, gsl::span<DML_OPERATOR_DESC> defaultValue)
-{
-    return ParseFieldHelper<gsl::span<DML_OPERATOR_DESC>>(object, fieldName, required, defaultValue, [=,&allocator](auto& value){ 
-        return ParseDmlOperatorDescArray(value, fused, allocator); 
-    });
-}
-
-// ----------------------------------------------------------------------------
 // OTHER
 // ----------------------------------------------------------------------------
 
@@ -1358,26 +1323,79 @@ Model::ResourceDesc ParseModelResourceDesc(
         // Required fields
         tex.width = ParseUInt32Field(object, "width", true, 0);
         tex.height = ParseUInt32Field(object, "height", true, 0);
-        // Optional structural fields (Phase A-C: only 2D, single mip, single slice, SRV usage allowed)
+        // Optional structural fields.
         std::string dimensionStr = ParseStringField(object, "dimension", false, "2D");
-        if (_stricmp(dimensionStr.c_str(), "2D") != 0)
-        {
-            throw std::invalid_argument("Only 2D textures are currently supported (dimension must be '2D').");
-        }
+        // Depth only relevant for 3D
+        bool dimensionIs3D = false;
         uint32_t mipLevels = ParseUInt32Field(object, "mipLevels", false, 1);
-        if (mipLevels != 1)
+        uint32_t arraySize = ParseUInt32Field(object, "arraySize", false, 1); // may be overridden for cube / cube arrays
+        bool isCube = false;
+        bool isCubeArray = false;
+        uint32_t cubeCount = 0; // logical cube count (faces = cubeCount*6)
+        auto dimLower = dimensionStr; std::transform(dimLower.begin(), dimLower.end(), dimLower.begin(), ::tolower);
+        if (dimLower == "2d")
         {
-            throw std::invalid_argument("Only a single mip level is currently supported (mipLevels must be 1).");
+            if (arraySize == 0) { throw std::invalid_argument("2D texture requires arraySize >= 1."); }
+            // arraySize > 1 now indicates a 2D array texture. No special flag required; handled via SRV dimension at bind time.
         }
-        uint32_t arraySize = ParseUInt32Field(object, "arraySize", false, 1);
-        if (arraySize != 1)
+        else if (dimLower == "3d")
         {
-            throw std::invalid_argument("Only a single array slice is currently supported (arraySize must be 1).");
+            dimensionIs3D = true;
+            tex.depth = ParseUInt32Field(object, "depth", true, 0);
+            if (tex.depth == 0) throw std::invalid_argument("3D texture requires depth >= 1.");
+            if (arraySize != 1) throw std::invalid_argument("3D texture does not support arraySize > 1 in current implementation.");
+            if (object.HasMember("cubeCount")) throw std::invalid_argument("cubeCount not valid for 3D textures.");
         }
+        else if (dimLower == "cube")
+        {
+            if (tex.width != tex.height) throw std::invalid_argument("Cube texture requires width==height.");
+            isCube = true; cubeCount = 1; arraySize = 6; // physical faces
+        }
+        else if (dimLower == "cubearray" || dimLower == "texturecubearray")
+        {
+            if (tex.width != tex.height) throw std::invalid_argument("CubeArray texture requires width==height.");
+            isCubeArray = true;
+            // cubeCount may be specified explicitly OR inferred from arraySize if multiple of 6.
+            bool cubeCountSpecified = false;
+            if (object.HasMember("cubeCount"))
+            {
+                cubeCount = ParseUInt32Field(object, "cubeCount", true, 0);
+                cubeCountSpecified = true;
+                if (cubeCount == 0) throw std::invalid_argument("cubeCount must be > 0 for CubeArray textures.");
+                arraySize = cubeCount * 6; // override physical array size
+            }
+            if (!cubeCountSpecified)
+            {
+                // Attempt inference from arraySize
+                if (arraySize % 6 != 0 || arraySize == 0)
+                {
+                    throw std::invalid_argument("CubeArray texture must specify either cubeCount or arraySize multiple of 6.");
+                }
+                cubeCount = arraySize / 6;
+            }
+        }
+        else
+        {
+            throw std::invalid_argument("Unsupported texture dimension. Supported: 2D, 3D, Cube, CubeArray.");
+        }
+        if (mipLevels != 1) { throw std::invalid_argument("Only a single mip level is currently supported (mipLevels must be 1)."); }
         std::string usageStr = ParseStringField(object, "usage", false, "srv");
-        if (_stricmp(usageStr.c_str(), "srv") != 0)
+        bool allowUav = false;
+        if (_stricmp(usageStr.c_str(), "srv") == 0)
         {
-            throw std::invalid_argument("Texture 'usage' currently only supports 'srv'.");
+            allowUav = false;
+        }
+        else if (_stricmp(usageStr.c_str(), "uav") == 0)
+        {
+            allowUav = true; // RWTexture only; no SRV view automatically created. Shader reflection determines descriptor kind.
+        }
+        else if (_stricmp(usageStr.c_str(), "srv_uav") == 0)
+        {
+            allowUav = true; // Allow both descriptor types (resource created with UAV flag).
+        }
+        else
+        {
+            throw std::invalid_argument("Texture 'usage' must be one of: 'srv', 'uav', 'srv_uav'.");
         }
         // Optional format string using existing DXGI parser if present; else default RGBA8.
         if (object.HasMember("format"))
@@ -1421,15 +1439,28 @@ Model::ResourceDesc ParseModelResourceDesc(
                     throw std::invalid_argument("Raw byte array initialization only supported for 4-byte-per-pixel RGBA formats currently.");
                 }
             };
-            uint64_t expectedSize = static_cast<uint64_t>(tex.width) * static_cast<uint64_t>(tex.height) * BytesPerPixel(tex.format);
+            uint64_t faceOrSliceCount = 1;
+            if (isCube) faceOrSliceCount = 6;
+            else if (isCubeArray) faceOrSliceCount = static_cast<uint64_t>(cubeCount) * 6ULL;
+            else if (arraySize > 1) faceOrSliceCount = arraySize; // 2D array
+            uint64_t depthFactor = dimensionIs3D ? tex.depth : 1ULL;
+            uint64_t expectedSize = static_cast<uint64_t>(tex.width) * static_cast<uint64_t>(tex.height) * depthFactor * BytesPerPixel(tex.format) * faceOrSliceCount;
             if (tex.initialData.size() != expectedSize)
             {
                 throw std::invalid_argument(fmt::format(
-                    "Texture initialValues byte length ({}) does not match width*height*Bpp ({}).", 
+                    "Texture initialValues byte length ({}) does not match width*height*depth*Bpp ({}).", 
                     tex.initialData.size(), expectedSize));
             }
         }
-        desc.value = std::move(tex);
+        // Store extended metadata
+        tex.mipLevels = mipLevels;
+        tex.arraySize = arraySize;
+        tex.isCube = isCube;
+        tex.isCubeArray = isCubeArray;
+        tex.cubeCount = (isCube || isCubeArray) ? cubeCount : 0u;
+        if (!dimensionIs3D) tex.depth = 1; // ensure depth=1 for non-3D
+    tex.allowUav = allowUav;
+    desc.value = std::move(tex);
     }
     else if (iequals(kind, "sampler"))
     {
@@ -1529,71 +1560,6 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
     return desc;
 }
 
-Model::OnnxDispatchableDesc ParseModelOnnxDispatchableDesc(const std::filesystem::path& parentPath, const rapidjson::Value& object)
-{
-    Model::OnnxDispatchableDesc desc = {};
-    auto sourcePath = ParseStringField(object, "sourcePath");
-    desc.sourcePath = ResolveInputFilePath(parentPath, sourcePath);
-
-    desc.freeDimNameOverrides = ParseFieldHelper<std::vector<std::pair<std::string, uint32_t>>>(
-        object, "freeDimensionNameOverrides", false, {}, [](auto& value)
-    { 
-        std::vector<std::pair<std::string, uint32_t>> overrides;
-
-        if (!value.IsObject())
-        {
-            throw std::invalid_argument("Expected a non-null JSON object.");
-        }
-
-        for (auto member = value.MemberBegin(); member != value.MemberEnd(); member++)
-        {
-            overrides.emplace_back(member->name.GetString(), ParseUInt32(member->value));
-        }
-
-        return overrides;
-    });
-
-    desc.freeDimDenotationOverrides = ParseFieldHelper<std::vector<std::pair<std::string, uint32_t>>>(
-        object, "freeDimensionDenotationOverrides", false, {}, [](auto& value)
-    { 
-        std::vector<std::pair<std::string, uint32_t>> overrides;
-        
-        if (!value.IsObject())
-        {
-            throw std::invalid_argument("Expected a non-null JSON object.");
-        }
-
-        for (auto member = value.MemberBegin(); member != value.MemberEnd(); member++)
-        {
-            overrides.emplace_back(member->name.GetString(), ParseUInt32(member->value));
-        }
-
-        return overrides;
-    });
-
-    desc.sessionOptionsConfigEntries = ParseFieldHelper<std::vector<std::pair<std::string, std::string>>>(
-        object, "sessionOptionsConfigEntries", false, {}, [](auto& value)
-    { 
-        std::vector<std::pair<std::string, std::string>> overrides;
-        
-        if (!value.IsObject())
-        {
-            throw std::invalid_argument("Expected a non-null JSON object.");
-        }
-
-        for (auto member = value.MemberBegin(); member != value.MemberEnd(); member++)
-        {
-            overrides.emplace_back(member->name.GetString(), ParseString(member->value));
-        }
-
-        return overrides;
-    });
-
-    desc.graphOptimizationLevel = ParseUInt32Field(object, "graphOptimizationLevel", false, 99);
-    desc.loggingLevel = ParseUInt32Field(object, "loggingLevel", false, 2);
-
-    return desc;
-}
 
 Model::BufferBindingSource ParseBufferBindingSource(const rapidjson::Value& value)
 {
@@ -1641,24 +1607,6 @@ std::vector<Model::BufferBindingSource> ParseBindingSource(const rapidjson::Valu
     return sourceResources;
 }
 
-Model::DmlDispatchableDesc::DmlCompileType ParseDmlCompileType(const rapidjson::Value& value)
-{
-    if (value.GetType() != rapidjson::Type::kStringType)
-    {
-        throw std::invalid_argument("Expected a string.");
-    }
-    auto valueString = value.GetString();
-    if (!strcmp(valueString, "DmlCompileOp")) { return Model::DmlDispatchableDesc::DmlCompileType::DmlCompileOp; }
-    if (!strcmp(valueString, "DmlCompileGraph")) { return Model::DmlDispatchableDesc::DmlCompileType::DmlCompileGraph; }
-    throw std::invalid_argument(fmt::format("'{}' is not a recognized value for DmlCompileType.", valueString));
-}
-
-Model::DmlDispatchableDesc::DmlCompileType ParseDmlCompileTypeField(const rapidjson::Value& object, std::string_view fieldName, bool required, Model::DmlDispatchableDesc::DmlCompileType defaultValue)
-{
-    return ParseFieldHelper<Model::DmlDispatchableDesc::DmlCompileType>(object, fieldName, required, defaultValue, [](auto& value) {
-        return ParseDmlCompileType(value);
-        });
-}
 
 void ParseBindings(const rapidjson::Value& object, std::unordered_map<std::string, std::vector<Model::BufferBindingSource>>& initBindings)
 {
@@ -1672,57 +1620,6 @@ void ParseBindings(const rapidjson::Value& object, std::unordered_map<std::strin
     }
 }
 
-Model::DmlDispatchableDesc ParseModelDmlDispatchableDesc(const rapidjson::Value& object, BucketAllocator& allocator)
-{
-    Model::DmlDispatchableDesc desc;
-    desc.desc = ParseDmlOperatorDesc(object, false, allocator);
-    desc.bindPoints = GetBindPoints(*desc.desc);
-
-    // DirectML requires optional bindings if DML_OPERATOR_DESC declares that binding for optional operator tensors.
-    // Logic is based on the Model directml Operator the tensors declared in "desc".
-    auto UpdateBindingPoints = [](const rapidjson::Value& object, std::vector<Model::DmlDispatchableDesc::BindPoint>& bindPoints) {
-        for (auto& bindPoint : bindPoints)
-        {
-            if (bindPoint.required || object.HasMember(bindPoint.name.c_str()))
-            {
-                bindPoint.requiredBinding = true;
-            }
-            else
-            {
-                bindPoint.requiredBinding = false;
-            }
-        }};
-
-    auto descMember = object.FindMember("Desc");
-    if (descMember == object.MemberEnd())
-    {
-        descMember = object.FindMember("desc");
-    }
-    if (descMember != object.MemberEnd())
-    {
-        UpdateBindingPoints(descMember->value, desc.bindPoints.inputs);
-        UpdateBindingPoints(descMember->value, desc.bindPoints.outputs);
-    }
-    desc.compileType = ParseDmlCompileTypeField(object, "dmlCompileType", false, Model::DmlDispatchableDesc::DmlCompileType::DmlCompileOp);
-
-    desc.executionFlags = ParseDmlExecutionFlagsField(object, "executionFlags", false, DML_EXECUTION_FLAG_NONE);
-
-    ParseBindings(object, desc.initBindings);
-
-    return desc;
-}
-
-Model::DmlSerializedGraphDispatchableDesc ParseModelDmlSerializedGraphDispatchableDesc(const std::filesystem::path& parentPath, const rapidjson::Value& object)
-{
-    Model::DmlSerializedGraphDispatchableDesc desc = {};
-    desc.sourcePath = ResolveInputFilePath(parentPath, ParseStringField(object, "sourcePath"));
-    
-    desc.executionFlags = ParseDmlExecutionFlagsField(object, "executionFlags", false, DML_EXECUTION_FLAG_NONE);
-
-    ParseBindings(object, desc.initBindings);
-
-    return desc;
-}
 
 Model::DispatchableDesc ParseModelDispatchableDesc(
     std::string_view name,
@@ -1737,23 +1634,8 @@ Model::DispatchableDesc ParseModelDispatchableDesc(
 
     Model::DispatchableDesc desc;
     desc.name = name;
-    auto type = ParseStringField(object, "type");
-    if (!_stricmp(type.data(), "hlsl")) 
-    { 
-        desc.value = ParseModelHlslDispatchableDesc(parentPath, object);
-    }
-    else if (!_stricmp(type.data(), "onnx"))
-    {
-        desc.value = ParseModelOnnxDispatchableDesc(parentPath, object);
-    }
-    else if (!_stricmp(type.data(), "dmlSerializedGraph"))
-    {
-        desc.value = ParseModelDmlSerializedGraphDispatchableDesc(parentPath, object);
-    }
-    else
-    {
-        desc.value = ParseModelDmlDispatchableDesc(object, allocator);
-    }
+    // 'type' is optional now; if provided must be "hlsl" (enforced in schema). Ignore value.
+    desc.value = ParseModelHlslDispatchableDesc(parentPath, object);
 
     return desc;
 }
@@ -1843,6 +1725,10 @@ Model::CommandDesc ParseModelCommandDesc(const rapidjson::Value& object, const s
     else if (!_stricmp(commandDesc.type.data(), "writeFile"))
     {
         commandDesc.command = ParseWriteFileCommand(object, outputPath);
+    }
+    else if (!_stricmp(commandDesc.type.data(), "resolveGpuTime"))
+    {
+        commandDesc.command = Model::ResolveGpuTimeCommand{};
     }
     else
     {
@@ -1952,19 +1838,22 @@ Model ParseModel(
 
     std::vector<Model::ResourceDesc> resources;
     auto resourcesField = doc.FindMember("resources");
-    if (resourcesField == doc.MemberEnd() || !resourcesField->value.IsObject())
+    if (resourcesField != doc.MemberEnd())
     {
-        throw std::invalid_argument("Expected an object named 'resources'");
-    }
-    for (auto field = resourcesField->value.MemberBegin(); field != resourcesField->value.MemberEnd(); field++)
-    {
-        try
+        if (!resourcesField->value.IsObject())
         {
-            resources.emplace_back(std::move(ParseModelResourceDesc(field->name.GetString(), inputPath, field->value)));
+            throw std::invalid_argument("If present, 'resources' must be an object");
         }
-        catch (std::exception& e)
+        for (auto field = resourcesField->value.MemberBegin(); field != resourcesField->value.MemberEnd(); field++)
         {
-            throw std::invalid_argument(fmt::format("Failed to parse resource {}: {}", field->name.GetString(), e.what()));
+            try
+            {
+                resources.emplace_back(std::move(ParseModelResourceDesc(field->name.GetString(), inputPath, field->value)));
+            }
+            catch (std::exception& e)
+            {
+                throw std::invalid_argument(fmt::format("Failed to parse resource {}: {}", field->name.GetString(), e.what()));
+            }
         }
     }
 

@@ -52,9 +52,17 @@ public:
     {
         uint32_t width;
         uint32_t height;
+        uint32_t depth = 1;              // For 3D textures (volume). 1 for 2D/cube.
         DXGI_FORMAT format;                 // e.g. DXGI_FORMAT_R8G8B8A8_UNORM
         std::vector<std::byte> initialData; // Optional initial texel data (row-major, tightly packed)
         bool useDeferredBinding = false;    // For parity with buffers (not yet implemented for textures)
+        // Extended texture metadata (defaults preserve existing 2D single-mip behavior)
+        uint32_t mipLevels = 1;             // Currently only 1 is supported for non-2D as well
+        uint32_t arraySize = 1;             // For future 2D array support (still validated elsewhere)
+        bool isCube = false;                // True if dim==Cube (arraySize implicitly 6)
+        bool isCubeArray = false;           // True if dim==CubeArray (depthOrArraySize = cubeCount*6)
+        uint32_t cubeCount = 0;             // Number of cubes when isCubeArray (must be >0); when isCube==true, cubeCount==1
+        bool allowUav = false;              // True if texture should allow unordered access (RWTexture*)
     };
     
     // Sampler description (moved out of ResourceDesc)
@@ -81,34 +89,6 @@ public:
     // DISPATCHABLES
     // ------------------------------------------------------------------------
 
-    struct DmlDispatchableDesc
-    {
-        enum class DmlCompileType 
-        {
-            DmlCompileOp,
-            DmlCompileGraph
-        };
-        struct BindPoint
-        {
-            std::string name;
-            uint32_t resourceCount;
-            bool required;
-            bool requiredBinding;
-        };
-
-        struct BindPoints
-        {
-            std::vector<BindPoint> inputs;
-            std::vector<BindPoint> outputs;
-        };
-
-        DML_OPERATOR_DESC* desc;
-        BindPoints bindPoints;
-        DML_EXECUTION_FLAGS executionFlags;
-        DmlCompileType compileType;
-        Bindings initBindings;
-    };
-
     struct HlslDispatchableDesc
     {
         enum class Compiler
@@ -121,33 +101,10 @@ public:
         std::vector<std::string> compilerArgs;
     };
 
-    struct OnnxDispatchableDesc
-    {
-        std::filesystem::path sourcePath;
-
-        // NOTE: these will be overriden if also using the respective command-line options.
-        std::vector<std::pair<std::string, uint32_t>> freeDimNameOverrides;
-        std::vector<std::pair<std::string, uint32_t>> freeDimDenotationOverrides;
-        std::vector<std::pair<std::string, std::string>> sessionOptionsConfigEntries;
-        uint32_t graphOptimizationLevel = 99;
-        uint32_t loggingLevel = 2;
-    };
-    
-    struct DmlSerializedGraphDispatchableDesc
-    {
-        std::filesystem::path sourcePath;
-        DML_EXECUTION_FLAGS executionFlags;
-        Bindings initBindings;
-    };
-
     struct DispatchableDesc
     {
         std::string name;
-        std::variant<
-            DmlDispatchableDesc,
-            HlslDispatchableDesc,
-            OnnxDispatchableDesc,
-            DmlSerializedGraphDispatchableDesc> value;
+        std::variant<HlslDispatchableDesc> value;
     };
 
     // COMMANDS
@@ -173,7 +130,13 @@ public:
         std::vector<uint32_t> dimensions; // The resources don't store their dimensions. So repeat them here.
     };
 
-    using Command = std::variant<DispatchCommand, PrintCommand, WriteFileCommand>;
+    // Triggers submission of the current command list and resolution of any queued GPU timestamp queries.
+    struct ResolveGpuTimeCommand
+    {
+        // No parameters.
+    };
+
+    using Command = std::variant<DispatchCommand, PrintCommand, WriteFileCommand, ResolveGpuTimeCommand>;
 
     struct CommandDesc
     {

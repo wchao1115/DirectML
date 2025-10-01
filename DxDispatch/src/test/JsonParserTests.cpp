@@ -1748,66 +1748,7 @@ TEST(ParseModelResourceDesc, BufferSequenceInitializer)
     }
 }
 
-// ----------------------------------------------------------------------------
-// Model::DmlDispatchableDesc
-// ----------------------------------------------------------------------------
-
-TEST(ParseModelDispatchableDesc, DmlAdd) 
-{
-    Document d;
-    d.Parse(R"({
-        "type": "DML_OPERATOR_ELEMENT_WISE_ADD",
-        "desc": 
-        {
-            "ATensor": { "DataType": "FLOAT32", "Sizes": [4] },
-            "BTensor": { "DataType": "FLOAT32", "Sizes": [4] },
-            "OutputTensor": { "DataType": "FLOAT32", "Sizes": [4] }
-        }
-    })");
-    ASSERT_FALSE(d.HasParseError());
-
-    BucketAllocator allocator;
-    auto result = ParseModelDispatchableDesc("add", "", d, allocator);
-    ASSERT_EQ(result.name, "add");
-    ASSERT_TRUE(std::holds_alternative<Model::DmlDispatchableDesc>(result.value));
-    auto modelDmlOpDesc = std::get<Model::DmlDispatchableDesc>(result.value);
-
-    ASSERT_EQ(modelDmlOpDesc.bindPoints.inputs.size(), 2);
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.inputs[0].name, "ATensor");
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.inputs[0].resourceCount, 1);
-    EXPECT_TRUE(modelDmlOpDesc.bindPoints.inputs[0].required);
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.inputs[1].name, "BTensor");
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.inputs[1].resourceCount, 1);
-    EXPECT_TRUE(modelDmlOpDesc.bindPoints.inputs[1].required);
-    ASSERT_EQ(modelDmlOpDesc.bindPoints.outputs.size(), 1);
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.outputs[0].name, "OutputTensor");
-    EXPECT_EQ(modelDmlOpDesc.bindPoints.outputs[0].resourceCount, 1);
-    EXPECT_TRUE(modelDmlOpDesc.bindPoints.outputs[0].required);
-
-    ASSERT_NE(modelDmlOpDesc.desc, nullptr);
-    ASSERT_EQ(modelDmlOpDesc.desc->Type, DML_OPERATOR_ELEMENT_WISE_ADD);
-
-    ASSERT_NE(modelDmlOpDesc.desc->Desc, nullptr);
-    auto addDesc = static_cast<const DML_ELEMENT_WISE_ADD_OPERATOR_DESC*>(modelDmlOpDesc.desc->Desc);
-
-    auto VerifyTensorDesc = [](const DML_TENSOR_DESC* desc)
-    {
-        EXPECT_EQ(desc->Type, DML_TENSOR_TYPE_BUFFER);
-        ASSERT_NE(desc->Desc, nullptr);
-        auto bufferDesc = static_cast<const DML_BUFFER_TENSOR_DESC*>(desc->Desc);
-        EXPECT_EQ(bufferDesc->DataType, DML_TENSOR_DATA_TYPE_FLOAT32);
-        EXPECT_EQ(bufferDesc->DimensionCount, 1);
-        EXPECT_EQ(bufferDesc->Flags, DML_TENSOR_FLAG_NONE);
-        EXPECT_EQ(bufferDesc->GuaranteedBaseOffsetAlignment, 0);
-        EXPECT_EQ(bufferDesc->TotalTensorSizeInBytes, 16);
-        EXPECT_EQ(bufferDesc->Sizes[0], 4);
-        EXPECT_EQ(bufferDesc->Strides, nullptr);
-    };
-
-    VerifyTensorDesc(addDesc->ATensor);
-    VerifyTensorDesc(addDesc->BTensor);
-    VerifyTensorDesc(addDesc->OutputTensor);
-}
+// (Removed DML dispatchable tests for HLSL-only configuration.)
 
 TEST(ParseModelDispatchableDesc, HlslAdd) 
 {
