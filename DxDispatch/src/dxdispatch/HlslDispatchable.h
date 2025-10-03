@@ -23,6 +23,7 @@ public:
         BufferViewType viewType;
         D3D12_DESCRIPTOR_RANGE_TYPE descriptorType;
         uint32_t offsetInDescriptorsFromTableStart;
+        uint32_t bindCount; // Number of descriptors this bind point consumes (BindCount from reflection; 1 for non-arrays)
         uint32_t structureByteStride;
         // Texture support (samplers deferred). When 'isTexture' is true the buffer-specific members 
         // (viewType/structureByteStride) are ignored for descriptor creation.

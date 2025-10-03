@@ -31,6 +31,7 @@ public:
         uint64_t counterOffsetBytes;
 
         std::vector<int64_t> shape;
+        bool replicate = false; // If true and shader expects descriptor array, replicate this single source across all descriptors
     };
 
     using Bindings = std::unordered_map<std::string, std::vector<BufferBindingSource>>;
