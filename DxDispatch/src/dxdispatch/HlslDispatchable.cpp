@@ -103,6 +103,7 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
         bp.viewType = viewType;
         bp.descriptorType = rangeType;
         bp.offsetInDescriptorsFromTableStart = (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) ? currentOffsetSampler : currentOffsetCSU;
+        bp.bindCount = static_cast<uint32_t>(numDescriptors);
         bp.structureByteStride = stride;
         bp.isTexture = isTexture;
         bp.srvDimension = srvDim;
@@ -166,8 +167,10 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
     std::vector<D3D12_DESCRIPTOR_RANGE1> samplerRanges;
     for (auto& r : allDescriptorRanges)
     {
-        if (r.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) samplerRanges.push_back(r);
-    else csuRanges.push_back(r);
+        if (r.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+            samplerRanges.push_back(r);
+        else
+            csuRanges.push_back(r);
     }
     if (!csuRanges.empty())
     {
@@ -380,10 +383,10 @@ void HlslDispatchable::CompileWithDxc()
     {
         switch (kv.second.descriptorType)
         {
-        case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER: numSamplers++; break;
+        case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER: numSamplers += kv.second.bindCount; break;
         case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
         case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
-        case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: numCSU++; break;
+        case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: numCSU += kv.second.bindCount; break;
         default: break;
         }
     }
@@ -426,13 +429,19 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
     uint32_t descriptorIncrementSizeCSU = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     uint32_t descriptorIncrementSizeSampler = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
+    // Heap descriptor counts for bounds checking
+    uint32_t heapCSUCapacity = m_descriptorHeap ? m_descriptorHeap->GetDesc().NumDescriptors : 0;
+    uint32_t heapSamplerCapacity = m_samplerDescriptorHeap ? m_samplerDescriptorHeap->GetDesc().NumDescriptors : 0;
+
     for (auto& binding : bindings)
     {
         auto& targetName = binding.first;
-        auto& sources = binding.second;
-        assert(sources.size() == 1); // TODO: support multiple
-        auto& source = sources[0];
-
+        const auto& sources = binding.second; // May be >1 for descriptor arrays
+        if (sources.empty())
+        {
+            throw std::invalid_argument(fmt::format("Binding '{}' supplied with zero sources.", targetName));
+        }
+        const auto& source = sources[0];
         assert(source.resource != nullptr);
         assert(source.resourceDesc != nullptr);
 
@@ -441,12 +450,57 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         const Model::TextureDesc* sourceTextureDescPtr = std::get_if<Model::TextureDesc>(&source.resourceDesc->value);
         const Model::SamplerDesc* sourceSamplerDescPtr = std::get_if<Model::SamplerDesc>(&source.resourceDesc->value);
 
-        auto& bindPointIterator = m_bindPoints.find(targetName);
+        auto bindPointIterator = m_bindPoints.find(targetName);
         if (bindPointIterator == m_bindPoints.end())
         {
             throw std::invalid_argument(fmt::format("Attempting to bind shader input '{}', which does not exist (or was optimized away) in the shader.", targetName));
         }
         auto& bindPoint = bindPointIterator->second;
+
+        uint32_t expected = std::max<uint32_t>(1, bindPoint.bindCount);
+        bool replicate = false;
+        if (expected > 1)
+        {
+            if (sources.size() != 1)
+            {
+                throw std::invalid_argument(fmt::format(
+                    "Binding '{}' is a descriptor array of size {}. Enumerating multiple distinct resources is unsupported; provide a single resource with 'replicate': true.",
+                    targetName, expected));
+            }
+            if (!source.replicate)
+            {
+                throw std::invalid_argument(fmt::format(
+                    "Binding '{}' requires 'replicate': true to populate descriptor array of size {}.",
+                    targetName, expected));
+            }
+            replicate = true;
+        }
+        else
+        {
+            if (sources.size() != 1)
+            {
+                throw std::invalid_argument(fmt::format(
+                    "Binding '{}' expects exactly one resource (got {}).", targetName, sources.size()));
+            }
+        }
+
+        auto validateIndex = [&](uint32_t descriptorIndex, bool sampler)
+        {
+            if (sampler)
+            {
+                if (descriptorIndex >= heapSamplerCapacity)
+                {
+                    throw std::runtime_error(fmt::format("Sampler descriptor index {} out of range (capacity {}).", descriptorIndex, heapSamplerCapacity));
+                }
+            }
+            else
+            {
+                if (descriptorIndex >= heapCSUCapacity)
+                {
+                    throw std::runtime_error(fmt::format("Descriptor index {} out of range (capacity {}).", descriptorIndex, heapCSUCapacity));
+                }
+            }
+        };
 
         auto GetCpuHandle = [&](bool sampler)->CD3DX12_CPU_DESCRIPTOR_HANDLE
         {
@@ -466,32 +520,31 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             }
         };
 
-        auto FillBufferOrUavViewDesc = [&](auto& viewDesc)
+        auto FillBufferOrUavViewDesc = [&](auto& viewDesc, const Dispatchable::BindingSource& src, const Model::BufferDesc* bufDescPtr)
         {
             viewDesc.Buffer.StructureByteStride = bindPoint.structureByteStride;
-            if (source.elementCount > std::numeric_limits<uint32_t>::max())
+            if (src.elementCount > std::numeric_limits<uint32_t>::max())
             {
-                throw std::invalid_argument(fmt::format("ElementCount '{}' is too large.", source.elementCount));
+                throw std::invalid_argument(fmt::format("ElementCount '{}' is too large.", src.elementCount));
             }
-            viewDesc.Buffer.NumElements = static_cast<uint32_t>(source.elementCount);
-            viewDesc.Buffer.FirstElement = source.elementOffset;
+            viewDesc.Buffer.NumElements = static_cast<uint32_t>(src.elementCount);
+            viewDesc.Buffer.FirstElement = src.elementOffset;
 
             if (bindPoint.viewType == BufferViewType::Typed)
             {
-                if (source.format)
+                if (src.format)
                 {
-                    viewDesc.Format = *source.format;
+                    viewDesc.Format = *src.format;
                 }
                 else
                 {
-                    // If the binding doesn't specify, assume the data type used to initialize the buffer.
-                    assert(sourceBufferDescPtr);
-                    viewDesc.Format = Device::GetDxgiFormatFromDmlTensorDataType(sourceBufferDescPtr->initialValuesDataType);
+                    assert(bufDescPtr);
+                    viewDesc.Format = Device::GetDxgiFormatFromDmlTensorDataType(bufDescPtr->initialValuesDataType);
                 }
             }
             else if (bindPoint.viewType == BufferViewType::Structured)
             {
-                if (source.format && *source.format != DXGI_FORMAT_UNKNOWN)
+                if (src.format && *src.format != DXGI_FORMAT_UNKNOWN)
                 {
                     throw std::invalid_argument(fmt::format("'{}' is a structured buffer, so the format must be omitted or UNKNOWN.", targetName));
                 }
@@ -499,21 +552,19 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             }
             else if (bindPoint.viewType == BufferViewType::Raw)
             {
-                if (source.format && *source.format != DXGI_FORMAT_R32_TYPELESS)
+                if (src.format && *src.format != DXGI_FORMAT_R32_TYPELESS)
                 {
                     throw std::invalid_argument(fmt::format("'{}' is a raw buffer, so the format must be omitted or R32_TYPELESS.", targetName));
                 }
-
-                assert(sourceBufferDescPtr);
-                if (sourceBufferDescPtr->sizeInBytes % D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT != 0)
+                assert(bufDescPtr);
+                if (bufDescPtr->sizeInBytes % D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT != 0)
                 {
                     throw std::invalid_argument(fmt::format(
                         "Attempting to bind '{}' as a raw buffer, but its size ({} bytes) is not aligned to {} bytes", 
-                        source.resourceDesc->name,
-                        sourceBufferDescPtr->sizeInBytes,
+                        src.resourceDesc->name,
+                        bufDescPtr->sizeInBytes,
                         D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT));
                 }
-
                 viewDesc.Format = DXGI_FORMAT_R32_TYPELESS;
                 if constexpr (std::is_same_v<decltype(viewDesc), D3D12_UNORDERED_ACCESS_VIEW_DESC&>)
                 {
@@ -553,9 +604,9 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
                 viewDesc.Texture3D.ResourceMinLODClamp = 0.0f;
                 break;
             case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
-                if (texDesc.arraySize <= 1)
+                if (texDesc.arraySize < 1)
                 {
-                    throw std::invalid_argument("Shader expects Texture2DArray view but resource arraySize <= 1.");
+                    throw std::invalid_argument("Shader expects Texture2DArray view but resource arraySize < 1.");
                 }
                 viewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
                 viewDesc.Texture2DArray.MostDetailedMip = 0;
@@ -599,134 +650,172 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
             }
         };
 
+        // Helper to fetch resource index i (replicate if needed)
+        auto getSource = [&](uint32_t i) -> const Dispatchable::BindingSource& {
+            return replicate ? sources[0] : sources[i];
+        };
+
+        // Per-type creation handling with array support
         if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
         {
-            if (!sourceSamplerDescPtr)
+            for (uint32_t i = 0; i < expected; ++i)
             {
-                throw std::invalid_argument(fmt::format("Binding '{}' expected a sampler resource", targetName));
+                const auto& src = getSource(i);
+                const Model::SamplerDesc* sampPtr = std::get_if<Model::SamplerDesc>(&src.resourceDesc->value);
+                if (!sampPtr)
+                {
+                    throw std::invalid_argument(fmt::format("Binding '{}' expected a sampler resource at index {}", targetName, i));
+                }
+                auto& samp = *sampPtr;
+                D3D12_SAMPLER_DESC sd = {};
+                sd.Filter = samp.filter;
+                sd.AddressU = samp.addressU;
+                sd.AddressV = samp.addressV;
+                sd.AddressW = samp.addressW;
+                sd.MipLODBias = samp.mipLODBias;
+                sd.MaxAnisotropy = samp.maxAnisotropy;
+                sd.ComparisonFunc = samp.comparisonFunc;
+                memcpy(sd.BorderColor, samp.borderColor, sizeof(float)*4);
+                sd.MinLOD = samp.minLOD;
+                sd.MaxLOD = samp.maxLOD;
+                uint32_t descriptorIndex = bindPoint.offsetInDescriptorsFromTableStart + i;
+                validateIndex(descriptorIndex, true);
+                auto base = m_samplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(base, descriptorIndex, descriptorIncrementSizeSampler);
+                m_device->D3D()->CreateSampler(&sd, cpuHandle);
             }
-            auto& samp = *sourceSamplerDescPtr;
-            D3D12_SAMPLER_DESC sd = {};
-            sd.Filter = samp.filter;
-            sd.AddressU = samp.addressU;
-            sd.AddressV = samp.addressV;
-            sd.AddressW = samp.addressW;
-            sd.MipLODBias = samp.mipLODBias;
-            sd.MaxAnisotropy = samp.maxAnisotropy;
-            sd.ComparisonFunc = samp.comparisonFunc;
-            memcpy(sd.BorderColor, samp.borderColor, sizeof(float)*4);
-            sd.MinLOD = samp.minLOD;
-            sd.MaxLOD = samp.maxLOD;
-            auto cpuHandle = GetCpuHandle(true);
-            m_device->D3D()->CreateSampler(&sd, cpuHandle);
         }
         else if (bindPoint.isTexture)
         {
-            if (!std::holds_alternative<Model::TextureDesc>(source.resourceDesc->value))
+            for (uint32_t i = 0; i < expected; ++i)
             {
-                throw std::invalid_argument(fmt::format("Binding '{}' expected a texture resource", targetName));
-            }
-            auto& texDesc = std::get<Model::TextureDesc>(source.resourceDesc->value);
-
-            if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
-            {
-                // UAV texture (RWTexture* / RWTexture*Array)
-                D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-                uavDesc.Format = texDesc.format;
-                switch (bindPoint.srvDimension)
+                const auto& src = getSource(i);
+                if (!std::holds_alternative<Model::TextureDesc>(src.resourceDesc->value))
                 {
-                case D3D_SRV_DIMENSION_TEXTURE2D:
-                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                    uavDesc.Texture2D.MipSlice = 0;
-                    uavDesc.Texture2D.PlaneSlice = 0;
-                    break;
-                case D3D_SRV_DIMENSION_TEXTURE3D:
-                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-                    uavDesc.Texture3D.MipSlice = 0;
-                    uavDesc.Texture3D.FirstWSlice = 0;
-                    uavDesc.Texture3D.WSize = texDesc.depth;
-                    break;
-                case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
-                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-                    uavDesc.Texture2DArray.MipSlice = 0;
-                    uavDesc.Texture2DArray.FirstArraySlice = 0;
-                    uavDesc.Texture2DArray.ArraySize = texDesc.arraySize;
-                    uavDesc.Texture2DArray.PlaneSlice = 0;
-                    break;
-                default:
-                    throw std::invalid_argument("Unsupported UAV texture dimension (supported: TEXTURE2D, TEXTURE3D, TEXTURE2DARRAY)");
+                    throw std::invalid_argument(fmt::format("Binding '{}' expected a texture resource at index {}", targetName, i));
                 }
-                auto cpuHandle = GetCpuHandle(false);
-                // CounterResource unused for plain RWTexture types.
-                m_device->D3D()->CreateUnorderedAccessView(source.resource, nullptr, &uavDesc, cpuHandle);
-            }
-            else
-            {
-                // Texture SRV
-                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                FillTextureViewDesc(srvDesc, texDesc, bindPoint);
-                auto cpuHandle = GetCpuHandle(false);
-                m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
+                auto& texDesc = std::get<Model::TextureDesc>(src.resourceDesc->value);
+                uint32_t descriptorIndex = bindPoint.offsetInDescriptorsFromTableStart + i;
+                validateIndex(descriptorIndex, false);
+                auto base = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(base, descriptorIndex, descriptorIncrementSizeCSU);
+                if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+                {
+                    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+                    uavDesc.Format = texDesc.format;
+                    switch (bindPoint.srvDimension)
+                    {
+                    case D3D_SRV_DIMENSION_TEXTURE2D:
+                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                        uavDesc.Texture2D.MipSlice = 0;
+                        uavDesc.Texture2D.PlaneSlice = 0;
+                        break;
+                    case D3D_SRV_DIMENSION_TEXTURE3D:
+                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                        uavDesc.Texture3D.MipSlice = 0;
+                        uavDesc.Texture3D.FirstWSlice = 0;
+                        uavDesc.Texture3D.WSize = texDesc.depth;
+                        break;
+                    case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
+                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                        uavDesc.Texture2DArray.MipSlice = 0;
+                        uavDesc.Texture2DArray.FirstArraySlice = 0;
+                        uavDesc.Texture2DArray.ArraySize = texDesc.arraySize;
+                        uavDesc.Texture2DArray.PlaneSlice = 0;
+                        break;
+                    default:
+                        throw std::invalid_argument("Unsupported UAV texture dimension (supported: TEXTURE2D, TEXTURE3D, TEXTURE2DARRAY)");
+                    }
+                    m_device->D3D()->CreateUnorderedAccessView(src.resource, nullptr, &uavDesc, cpuHandle);
+                }
+                else // SRV
+                {
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                    FillTextureViewDesc(srvDesc, texDesc, bindPoint);
+                    m_device->D3D()->CreateShaderResourceView(src.resource, &srvDesc, cpuHandle);
+                }
             }
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
         {
-            if (!sourceBufferDescPtr)
+            for (uint32_t i = 0; i < expected; ++i)
             {
-                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (UAV)", targetName));
+                const auto& src = getSource(i);
+                const Model::BufferDesc* bufDesc = std::get_if<Model::BufferDesc>(&src.resourceDesc->value);
+                if (!bufDesc)
+                {
+                    throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (UAV) at index {}", targetName, i));
+                }
+                D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+                uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                FillBufferOrUavViewDesc(uavDesc, src, bufDesc);
+                uavDesc.Buffer.CounterOffsetInBytes = src.counterOffsetBytes;
+                uint32_t descriptorIndex = bindPoint.offsetInDescriptorsFromTableStart + i;
+                validateIndex(descriptorIndex, false);
+                auto base = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(base, descriptorIndex, descriptorIncrementSizeCSU);
+                m_device->D3D()->CreateUnorderedAccessView(src.resource, src.counterResource, &uavDesc, cpuHandle);
             }
-            auto& sourceBufferDesc = *sourceBufferDescPtr;
-            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            FillBufferOrUavViewDesc(uavDesc);
-            uavDesc.Buffer.CounterOffsetInBytes = source.counterOffsetBytes;
-            auto cpuHandle = GetCpuHandle(false);
-            m_device->D3D()->CreateUnorderedAccessView(source.resource, source.counterResource, &uavDesc, cpuHandle);
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
         {
-            if (!sourceBufferDescPtr && !bindPoint.isTexture)
+            for (uint32_t i = 0; i < expected; ++i)
             {
-                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (SRV)", targetName));
+                const auto& src = getSource(i);
+                if (!bindPoint.isTexture)
+                {
+                    const Model::BufferDesc* bufDesc = std::get_if<Model::BufferDesc>(&src.resourceDesc->value);
+                    if (!bufDesc)
+                    {
+                        throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (SRV) at index {}", targetName, i));
+                    }
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    FillBufferOrUavViewDesc(srvDesc, src, bufDesc);
+                    uint32_t descriptorIndex = bindPoint.offsetInDescriptorsFromTableStart + i;
+                    validateIndex(descriptorIndex, false);
+                    auto base = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                    auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(base, descriptorIndex, descriptorIncrementSizeCSU);
+                    m_device->D3D()->CreateShaderResourceView(src.resource, &srvDesc, cpuHandle);
+                }
+                // Texture SRVs handled in bindPoint.isTexture path above
             }
-            auto& sourceBufferDesc = *sourceBufferDescPtr; // safe if not texture
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            FillBufferOrUavViewDesc(srvDesc);
-            auto cpuHandle = GetCpuHandle(false);
-            m_device->D3D()->CreateShaderResourceView(source.resource, &srvDesc, cpuHandle);
         }
         else if (bindPoint.descriptorType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
         {
-            if (!sourceBufferDescPtr)
+            for (uint32_t i = 0; i < expected; ++i)
             {
-                throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (CBV)", targetName));
+                const auto& src = getSource(i);
+                const Model::BufferDesc* bufDesc = std::get_if<Model::BufferDesc>(&src.resourceDesc->value);
+                if (!bufDesc)
+                {
+                    throw std::invalid_argument(fmt::format("Binding '{}' expected a buffer resource (CBV) at index {}", targetName, i));
+                }
+                if (bufDesc->sizeInBytes % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT != 0)
+                {
+                    m_logger->LogInfo(fmt::format(
+                        "[warn] '{}' CBV size {} not {}-byte aligned; proceeding (perf mode).", 
+                        src.resourceDesc->name,
+                        bufDesc->sizeInBytes,
+                        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT).c_str());
+                }
+                else if (bufDesc->sizeInBytes > std::numeric_limits<uint32_t>::max())
+                {
+                    throw std::invalid_argument(fmt::format(
+                        "Attempting to bind '{}' as a constant buffer, but its size ({} bytes) is too large.", 
+                        src.resourceDesc->name,
+                        bufDesc->sizeInBytes));
+                }
+                D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+                cbvDesc.BufferLocation = src.resource->GetGPUVirtualAddress();
+                cbvDesc.SizeInBytes = static_cast<uint32_t>(bufDesc->sizeInBytes);
+                uint32_t descriptorIndex = bindPoint.offsetInDescriptorsFromTableStart + i;
+                validateIndex(descriptorIndex, false);
+                auto base = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                auto cpuHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(base, descriptorIndex, descriptorIncrementSizeCSU);
+                m_device->D3D()->CreateConstantBufferView(&cbvDesc, cpuHandle);
             }
-            auto& sourceBufferDesc = *sourceBufferDescPtr;
-            if (sourceBufferDesc.sizeInBytes % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT != 0)
-            {
-                // Auto-allow: size came from inference; round-down binding will still work as long as resource >= declared size.
-                // For clarity, emit a warning once (could be enhanced with a set to avoid repeats).
-                m_logger->LogInfo(fmt::format(
-                    "[warn] '{}' CBV size {} not {}-byte aligned; proceeding (perf mode).", 
-                    source.resourceDesc->name,
-                    sourceBufferDesc.sizeInBytes,
-                    D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT).c_str());
-            }
-            else if (sourceBufferDesc.sizeInBytes > std::numeric_limits<uint32_t>::max())
-            {
-                throw std::invalid_argument(fmt::format(
-                    "Attempting to bind '{}' as a constant buffer, but its size ({} bytes) is too large.", 
-                    source.resourceDesc->name,
-                    sourceBufferDesc.sizeInBytes));
-            }
-
-            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-            cbvDesc.BufferLocation = source.resource->GetGPUVirtualAddress();
-            cbvDesc.SizeInBytes = static_cast<uint32_t>(sourceBufferDesc.sizeInBytes);
-            auto cpuHandle = GetCpuHandle(false);
-            m_device->D3D()->CreateConstantBufferView(&cbvDesc, cpuHandle);
         }
         else
         {

@@ -160,7 +160,7 @@
                 "width": { "type": "integer", "minimum": 1, "description": "Texture width in texels" },
                 "height": { "type": "integer", "minimum": 1, "description": "Texture height in texels" },
                 "format": { "type": "string", "description": "DXGI_FORMAT (defaults to R8G8B8A8_UNORM if omitted)" },
-                "dimension": { "type": "string", "enum": ["2D","3D","Cube","CubeArray"], "description": "Texture dimension", "default": "2D" },
+                "dimension": { "type": "string", "enum": ["2D","2DArray","3D","Cube","CubeArray"], "description": "Texture dimension. '2DArray' explicitly denotes an array texture (multiple layers). For '2D' the arraySize must be 1.", "default": "2D" },
                 "depth": { "type": "integer", "minimum": 1, "description": "Texture depth in texels (only for 3D)" },
                 "mipLevels": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Number of mip levels (currently must be 1)", "default": 1 },
                 "arraySize": { "type": "integer", "minimum": 1, "description": "Array size (for 2DArray or CubeArray physical faces)" , "default": 1 },
@@ -176,7 +176,9 @@
             },
             "required": ["width", "height"],
             "allOf": [
-                { "if": { "properties": { "dimension": { "const": "3D" } } }, "then": { "required": ["depth"], "properties": { "arraySize": { "const": 1 }, "cubeCount": false } } }
+                { "if": { "properties": { "dimension": { "const": "3D" } } }, "then": { "required": ["depth"], "properties": { "arraySize": { "const": 1 }, "cubeCount": false } } },
+                { "if": { "properties": { "dimension": { "const": "2D" } } }, "then": { "properties": { "arraySize": { "const": 1 } } } },
+                { "if": { "properties": { "dimension": { "const": "2DArray" } } }, "then": { "properties": { "arraySize": { "minimum": 1 } } } }
             ],
             "additionalProperties": true
         },
@@ -260,6 +262,12 @@
                     "type": "string",
                     "description": "The name of the resource in the model"
                 },
+                "replicate":
+                {
+                    "type": "boolean",
+                    "description": "If true and the shader expects an array of descriptors (e.g. Texture2D X[N]) but only a single source resource is supplied, that resource will be replicated to fill all N descriptor slots. If false (default) and counts mismatch, an error is raised.",
+                    "default": false
+                },
                 "format": 
                 {
                     "type": "string",
@@ -307,26 +315,8 @@
                 "bindings":
                 {
                     "type": "object",
-                    "description": "Resource bindings for execution",
-                    "patternProperties": 
-                    {
-                        ".*": {
-                            "oneOf":
-                            [
-                                { "$ref": "#/$defs/binding" },
-                                { "type": "string" },
-                                { 
-                                    "type": "array",
-                                    "items": { 
-                                        "oneOf": [
-                                            { "$ref": "#/$defs/binding" },
-                                            { "type": "string" }
-                                        ]
-                                    }
-                                }
-                            ]
-                        }
-                    }
+                    "description": "Resource bindings for execution. Each binding key maps to either a resource name (string) or a single binding object. Enumerating arrays of distinct resources is intentionally unsupported; descriptor arrays must use a single binding with 'replicate': true.",
+                    "patternProperties": { ".*": { "oneOf": [ { "$ref": "#/$defs/binding" }, { "type": "string" } ] } }
                 },
                 "threadGroupCount":
                 {

@@ -36,7 +36,6 @@ static uint32_t GetSizeInBytes(DML_TENSOR_DATA_TYPE dataType)
         case DML_TENSOR_DATA_TYPE_INT32:
         case DML_TENSOR_DATA_TYPE_UINT32:
             return 4;
-    
         case DML_TENSOR_DATA_TYPE_FLOAT64:
         case DML_TENSOR_DATA_TYPE_INT64:
         case DML_TENSOR_DATA_TYPE_UINT64:
@@ -1335,8 +1334,11 @@ Model::ResourceDesc ParseModelResourceDesc(
         auto dimLower = dimensionStr; std::transform(dimLower.begin(), dimLower.end(), dimLower.begin(), ::tolower);
         if (dimLower == "2d")
         {
-            if (arraySize == 0) { throw std::invalid_argument("2D texture requires arraySize >= 1."); }
-            // arraySize > 1 now indicates a 2D array texture. No special flag required; handled via SRV dimension at bind time.
+            if (arraySize != 1) { throw std::invalid_argument("For dimension '2D', arraySize must be exactly 1. Use '2DArray' for layered textures."); }
+        }
+        else if (dimLower == "2darray")
+        {
+            if (arraySize < 1) { throw std::invalid_argument("For dimension '2DArray', arraySize must be >= 1."); }
         }
         else if (dimLower == "3d")
         {
@@ -1585,6 +1587,11 @@ Model::BufferBindingSource ParseBufferBindingSource(const rapidjson::Value& valu
             bindingSource.counterOffsetBytes = ParseUInt64Field(value, "counterOffsetBytes", false);
         }
         bindingSource.shape = ParseInt64ArrayAsVectorField(value, "shape", false);
+        if (value.HasMember("replicate"))
+        {
+            if (!value["replicate"].IsBool()) throw std::invalid_argument("Field 'replicate' must be a boolean.");
+            bindingSource.replicate = value["replicate"].GetBool();
+        }
     }
 
     return bindingSource;
@@ -1595,15 +1602,9 @@ std::vector<Model::BufferBindingSource> ParseBindingSource(const rapidjson::Valu
     std::vector<Model::BufferBindingSource> sourceResources;
     if (object.IsArray())
     {
-        for (auto& bindingValue : object.GetArray())
-        {
-            sourceResources.push_back(ParseBufferBindingSource(bindingValue));
-        }
+        throw std::invalid_argument("Enumerating multiple distinct resources for a single binding is no longer supported. Provide a single resource (optionally with 'replicate': true) instead.");
     }
-    else
-    {
-        sourceResources.push_back(ParseBufferBindingSource(object));
-    }
+    sourceResources.push_back(ParseBufferBindingSource(object));
     return sourceResources;
 }
 

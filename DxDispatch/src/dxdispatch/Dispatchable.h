@@ -13,6 +13,7 @@ struct Dispatchable
         ID3D12Resource* counterResource;
         uint64_t counterOffsetBytes;
         std::vector<int64_t> shape;
+        bool replicate = false; // For descriptor arrays: replicate this single source across all descriptors
     };
 
     struct DeferredBinding
