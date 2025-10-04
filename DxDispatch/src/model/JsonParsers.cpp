@@ -5,6 +5,7 @@
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
 #include "ImageReaderWriter.h"
+#include <cstring>
 #ifndef WIN32
 #define _stricmp strcasecmp
 #endif
@@ -1159,15 +1160,172 @@ Model::BufferDesc ParseModelBufferDesc(const std::filesystem::path& parentPath, 
     }
     else if (initialValuesField->value.IsArray())
     {
+        const auto& arr = initialValuesField->value;
+        bool maybeStructured = false;
+        if (arr.Size() > 0 && arr[0].IsObject())
+        {
+            const auto& first = arr[0];
+            maybeStructured = first.HasMember("offset") && first.HasMember("size");
+        }
+
+        if (maybeStructured)
+        {
+            // New structured constant buffer format: each entry supplies name,type,value,offset,size.
+            // This path ignores legacy layout/sizeInBytes (size derived), and forces UNKNOWN sentinel at the buffer level.
+            buffer.initialValuesDataType = DML_TENSOR_DATA_TYPE_UNKNOWN; // authoritative per-entry types
+            struct PendingFieldBytes { uint64_t offset; uint64_t span; std::vector<std::byte> data; std::string name; std::string type; };
+            std::vector<PendingFieldBytes> pending; pending.reserve(arr.Size());
+            uint64_t maxEnd = 0;
+
+            auto parseTypeComponentCount = [](std::string_view type)->uint32_t
+            {
+                // Extract trailing digits as vector length; default 1
+                size_t i = type.size();
+                while (i>0 && isdigit(static_cast<unsigned char>(type[i-1]))) { --i; }
+                if (i == type.size()) return 1; // no digits
+                uint32_t n = static_cast<uint32_t>(std::stoul(std::string(type.substr(i))));
+                return n == 0 ? 1 : n;
+            };
+            auto parseBaseKind = [](std::string s){
+                for (auto& c : s) c = static_cast<char>(::toupper(static_cast<unsigned char>(c)));
+                // Strip trailing digits
+                while (!s.empty() && isdigit(static_cast<unsigned char>(s.back()))) s.pop_back();
+                return s;
+            };
+            auto writeScalar = [](std::vector<std::byte>& out, const std::string& baseKind, double value){
+                if (baseKind == "FLOAT")
+                {
+                    float f = static_cast<float>(value);
+                    std::byte* b = reinterpret_cast<std::byte*>(&f);
+                    out.insert(out.end(), b, b+sizeof(f));
+                }
+                else if (baseKind == "UINT")
+                {
+                    uint32_t v = static_cast<uint32_t>(value);
+                    std::byte* b = reinterpret_cast<std::byte*>(&v);
+                    out.insert(out.end(), b, b+sizeof(v));
+                }
+                else if (baseKind == "INT")
+                {
+                    int32_t v = static_cast<int32_t>(value);
+                    std::byte* b = reinterpret_cast<std::byte*>(&v);
+                    out.insert(out.end(), b, b+sizeof(v));
+                }
+                else if (baseKind == "BOOL")
+                {
+                    uint32_t v = value != 0.0 ? 1u : 0u; // bool is 4 bytes in cbuffers
+                    std::byte* b = reinterpret_cast<std::byte*>(&v);
+                    out.insert(out.end(), b, b+sizeof(v));
+                }
+                else
+                {
+                    throw std::invalid_argument("Unsupported constant buffer field base type '" + baseKind + "'.");
+                }
+            };
+
+            for (rapidjson::SizeType i = 0; i < arr.Size(); ++i)
+            {
+                const auto& entry = arr[i];
+                if (!entry.IsObject())
+                {
+                    throw std::invalid_argument("Structured constant buffer 'initialValues' entries must all be objects.");
+                }
+                uint64_t offset = ParseUInt64Field(entry, "offset", true, 0);
+                uint64_t span = ParseUInt64Field(entry, "size", true, 0);
+                std::string name = ParseStringField(entry, "name", false, fmt::format("PADDING_{}", i));
+                std::string type = ParseStringField(entry, "type", false, "");
+                PendingFieldBytes pf{offset, span, {}, name, type};
+
+                if (!type.empty())
+                {
+                    uint32_t componentCount = parseTypeComponentCount(type);
+                    std::string baseKind = parseBaseKind(type);
+                    if (entry.HasMember("value"))
+                    {
+                        const auto& v = entry["value"];
+                        if (v.IsArray())
+                        {
+                            if (v.Size() != componentCount)
+                            {
+                                throw std::invalid_argument(fmt::format("Field '{}' expects {} components but value has {}.", name, componentCount, v.Size()));
+                            }
+                            for (rapidjson::SizeType j = 0; j < v.Size(); ++j)
+                            {
+                                if (!v[j].IsNumber()) throw std::invalid_argument("Vector component must be numeric.");
+                                writeScalar(pf.data, baseKind, v[j].GetDouble());
+                            }
+                        }
+                        else if (v.IsNumber())
+                        {
+                            if (componentCount != 1)
+                            {
+                                throw std::invalid_argument(fmt::format("Field '{}' expects {} components but scalar provided.", name, componentCount));
+                            }
+                            writeScalar(pf.data, baseKind, v.GetDouble());
+                        }
+                        else
+                        {
+                            throw std::invalid_argument("Field 'value' must be number or array for structured constant buffer entry.");
+                        }
+                    }
+                }
+                // If no type or value (padding), leave pf.data empty; bytes remain zero.
+                if (pf.data.size() > span)
+                {
+                    throw std::invalid_argument(fmt::format("Field '{}' data byte size {} exceeds declared span {}.", name, pf.data.size(), span));
+                }
+                maxEnd = std::max<uint64_t>(maxEnd, offset + span);
+                pending.emplace_back(std::move(pf));
+            }
+
+            auto align16 = [](uint64_t v){ return (v + 15ull) & ~15ull; };
+            // If caller supplied sizeInBytes keep it (validated later). Otherwise derive.
+            bool explicitSize = object.HasMember("sizeInBytes");
+            uint64_t derivedSize = align16(maxEnd);
+            if (explicitSize)
+            {
+                buffer.sizeInBytes = ParseUInt64Field(object, "sizeInBytes", false, derivedSize);
+                if (buffer.sizeInBytes < derivedSize)
+                {
+                    throw std::invalid_argument(fmt::format("Provided sizeInBytes {} is smaller than derived structured constant buffer size {}.", buffer.sizeInBytes, derivedSize));
+                }
+            }
+            else
+            {
+                buffer.sizeInBytes = derivedSize;
+            }
+            buffer.initialValuesOffsetInBytes = 0;
+            buffer.initialValues.assign(buffer.sizeInBytes, std::byte{0});
+            for (auto& pf : pending)
+            {
+                if (!pf.data.empty())
+                {
+                    if (pf.offset + pf.data.size() > buffer.initialValues.size())
+                    {
+                        throw std::invalid_argument("Internal error writing structured cbuffer bytes (overflow).");
+                    }
+                    std::memcpy(buffer.initialValues.data() + pf.offset, pf.data.data(), pf.data.size());
+                }
+                Model::BufferDesc::ConstantBufferField field{pf.name, pf.type, static_cast<uint32_t>(pf.offset), static_cast<uint32_t>(pf.span)};
+                buffer.cbufferFields.push_back(std::move(field));
+            }
+
+            // Optional structType discriminator
+            buffer.structType = ParseStringField(object, "structType", false, "");
+            buffer.useDeferredBinding = false;
+            return buffer; // structured path complete
+        }
+
+        // Legacy/flat initialValues handling
         // e.g. "initialValues": [{"type": "UINT32", "value": 42}, {"type": "FLOAT32", "value": 3.14159}]
         if (buffer.initialValuesDataType == DML_TENSOR_DATA_TYPE_UNKNOWN)
         {
-            buffer.initialValues = ParseMixedPrimitiveArray(initialValuesField->value);
+            buffer.initialValues = ParseMixedPrimitiveArray(arr);
         }
         // e.g. "initialValues": [1,2,3]
         else
         {
-            buffer.initialValues = GenerateInitialValuesFromList(buffer.initialValuesDataType, initialValuesField->value);
+            buffer.initialValues = GenerateInitialValuesFromList(buffer.initialValuesDataType, arr);
         }
     } 
     else if (initialValuesField->value.IsObject())
@@ -1253,22 +1411,28 @@ Model::BufferDesc ParseModelBufferDesc(const std::filesystem::path& parentPath, 
         throw std::invalid_argument("'initialValues' must be non-empty.");
     }
 
-    buffer.sizeInBytes = ParseUInt64Field(object, "sizeInBytes", false, buffer.initialValues.size());
-    if (!object.HasMember("sizeInBytes"))
+    if (buffer.cbufferFields.empty()) // skip legacy size inference if structured path already handled size
     {
-        // Unless the size was explicitly set, round up to the nearest 4 bytes.
-        buffer.sizeInBytes = (buffer.sizeInBytes + 3) & ~3ull;
+        buffer.sizeInBytes = ParseUInt64Field(object, "sizeInBytes", false, buffer.initialValues.size());
+        if (!object.HasMember("sizeInBytes"))
+        {
+            // Unless the size was explicitly set, round up to the nearest 4 bytes.
+            buffer.sizeInBytes = (buffer.sizeInBytes + 3) & ~3ull;
+        }
     }
 
     buffer.initialValuesOffsetInBytes = ParseUInt64Field(object, "initialValuesOffsetInBytes", false, 0);
 
-    if (buffer.initialValues.size() + buffer.initialValuesOffsetInBytes > buffer.sizeInBytes)
+    if (buffer.cbufferFields.empty()) // structured path already validated
     {
-        throw std::invalid_argument(fmt::format(
-            "The buffer size ({} bytes) is too small for the initialValues ({} bytes) at offset {} bytes.", 
-            buffer.sizeInBytes, 
-            buffer.initialValues.size(),
-            buffer.initialValuesOffsetInBytes));
+        if (buffer.initialValues.size() + buffer.initialValuesOffsetInBytes > buffer.sizeInBytes)
+        {
+            throw std::invalid_argument(fmt::format(
+                "The buffer size ({} bytes) is too small for the initialValues ({} bytes) at offset {} bytes.", 
+                buffer.sizeInBytes, 
+                buffer.initialValues.size(),
+                buffer.initialValuesOffsetInBytes));
+        }
     }
 
     return buffer;

@@ -182,13 +182,6 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             "Disables automatically defining __XBOX_DISABLE_PRECOMPILE when compiling shaders for Xbox",
             cxxopts::value<bool>()
         )
-        // If this option is chosen, DxDispatch's autogeneration of the root signatures is disabled. The root
-        // signatures are expected to be defined through __XBOX_DX12_ROOT_SIGNATURE.
-        (
-            "xbox_rootsig_defined",
-            "Disables automatically generating root signatures because the root signatures is already defined through __XBOX_DX12_ROOT_SIGNATURE.",
-            cxxopts::value<bool>()
-            )
         (
             "c,pix_capture_type",
             "Type of PIX captures to take: gpu, timing, or manual.",
@@ -206,7 +199,7 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         )
         (
             "no_pdb",
-            "Disables automatically generating .PDB file after the compilation.",
+            "Disables .PDB generation and suppresses automatic insertion of -Zi into DXC compiler arguments.",
             cxxopts::value<bool>()
             )
         ;
@@ -444,10 +437,6 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         m_forceDisablePrecompiledShadersOnXbox = false;
     }
 
-    if (result.count("xbox_rootsig_defined"))
-    {
-        m_rootSigDefinedOnXbox = result["xbox_rootsig_defined"].as<bool>();
-    }
 
     if (result.count("pix_capture_type")) 
     { 
