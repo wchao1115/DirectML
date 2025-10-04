@@ -120,13 +120,44 @@
             "type": "object",
             "properties": 
             {
+                "layout": {
+                    "type": "array",
+                    "description": "Optional structured layout for constant buffers: ordered list of members with offsets and sizes.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "type": { "type": "string" },
+                            "offset": { "type": "integer", "minimum": 0 },
+                            "size": { "type": "integer", "minimum": 1 }
+                        },
+                        "required": ["name"],
+                        "additionalProperties": true
+                    }
+                },
                 "initialValues": 
                 { 
                     "oneOf":
                     [
                         { "$ref": "#/$defs/arrayInitializer" },
                         { "$ref": "#/$defs/constantInitializer" },
-                        { "$ref": "#/$defs/sequenceInitializer" }
+                        { "$ref": "#/$defs/sequenceInitializer" },
+                        {
+                            "type": "array",
+                            "description": "Structured member initialization: array of member objects (for constant buffers)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "type": { "type": "string" },
+                                    "value": { "type": ["number","string","array","object","boolean"] },
+                                    "offset": { "type": "integer", "minimum": 0 },
+                                    "size": { "type": "integer", "minimum": 1 }
+                                },
+                                "required": ["name","type","value"],
+                                "additionalProperties": true
+                            }
+                        }
                     ],
                     "description": "Initial values in the buffer"
                 },

@@ -23,7 +23,6 @@ public:
     TimingVerbosity GetTimingVerbosity() const { return m_timingVerbosity; }
     uint32_t MaxGpuTimeMeasurements() const { return m_maxGpuTimeMeasurements; }
     bool ForceDisablePrecompiledShadersOnXbox() const { return m_forceDisablePrecompiledShadersOnXbox; }
-    bool RootSigDefinedOnXbox() const { return m_rootSigDefinedOnXbox; }
     bool ClearShaderCaches() const { return m_clearShaderCaches; }
     bool DisableGpuTimeout() const { return m_disableGpuTimeout; }
     bool EnableDred() const { return m_enableDred; }
@@ -84,7 +83,6 @@ private:
     TimingVerbosity m_timingVerbosity = TimingVerbosity::Basic;
     uint32_t m_maxGpuTimeMeasurements = 8192;
     bool m_forceDisablePrecompiledShadersOnXbox = true;
-    bool m_rootSigDefinedOnXbox = false;
     bool m_clearShaderCaches = false;
     bool m_disableGpuTimeout = false;
     bool m_enableDred = false;

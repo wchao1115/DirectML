@@ -107,7 +107,7 @@ HRESULT PixCaptureHelper::BeginCapturableWork()
 #if defined(PIX_NONE)
             return E_NOTIMPL;
 #elif defined(_GAMING_XBOX)
-            auto captureName = L"D:\\Temp\\" + m_captureName + L".xpix";
+            auto captureName = L"D:\\temp\\" + m_captureName + L".xpix";
             return m_commandQueue->PIXGpuBeginCapture(0, captureName.c_str());
 #else
             if (!m_gpuCaptureLibrary)

@@ -46,6 +46,19 @@ public:
         DML_TENSOR_DATA_TYPE initialValuesDataType;
         uint64_t initialValuesOffsetInBytes;
         bool useDeferredBinding;
+        // Structured constant buffer (field-accurate) metadata. When non-empty, the
+        // 'initialValues' vector already contains every field's initialized bytes
+        // placed at its reflected offset (including any padding ranges left as 0).
+        struct ConstantBufferField
+        {
+            std::string name;   // Fully qualified field path (may be PADDING_* surrogate)
+            std::string type;   // Coarse type string e.g. FLOAT, FLOAT3, UINT4
+            uint32_t offset;    // Byte offset from start of cbuffer
+            uint32_t size;      // Exact byte span occupied by this logical member (including its own padding)
+        };
+        std::vector<ConstantBufferField> cbufferFields; // Present only for structured cbuffers
+        std::string structType; // Optional discriminator for ConstantBuffer<T> variants
+        bool IsStructuredConstantBuffer() const { return !cbufferFields.empty(); }
     };
 
     // Texture resource description (moved out of ResourceDesc)

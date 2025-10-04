@@ -9,8 +9,8 @@
 using Microsoft::WRL::ComPtr;
 
 HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger)
-    : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_noPdb(args.NoPdb()), m_rootSigDefinedOnXbox(args.RootSigDefinedOnXbox()),
-      m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
+        : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_noPdb(args.NoPdb()),
+            m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
 {
 }
 
@@ -243,8 +243,27 @@ void HlslDispatchable::CompileWithDxc()
         compilerArgs[i] = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(m_desc.compilerArgs[i]);
     }
 
+    // Automatically request debug information (PDB generation) unless the user disabled it with --no_pdb.
+    // Only add -Zi if neither -Zi nor /Zi was already specified explicitly.
+    if (!m_noPdb)
+    {
+        bool hasZi = false;
+        for (auto &arg : compilerArgs)
+        {
+            if (arg == L"-Zi" || arg == L"/Zi")
+            {
+                hasZi = true;
+                break;
+            }
+        }
+        if (!hasZi)
+        {
+            compilerArgs.push_back(L"-Zi");
+        }
+    }
+
 #ifdef _GAMING_XBOX
-    if (m_forceDisablePrecompiledShadersOnXbox && !m_rootSigDefinedOnXbox)
+    if (m_forceDisablePrecompiledShadersOnXbox)
     {
         compilerArgs.push_back(L"-D");
         compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
@@ -304,7 +323,7 @@ void HlslDispatchable::CompileWithDxc()
             // TODO: store this in a temp directory?
             FILE* fp = nullptr;
 #ifdef _GAMING_XBOX
-            std::wstring fullPath = L"T:\\"; // T:\ is writable in Xbox.
+            std::wstring fullPath = L"D:\\temp\\";
 #else
             std::wstring fullPath;
 #endif
@@ -350,7 +369,7 @@ void HlslDispatchable::CompileWithDxc()
     }
 
 #ifdef _GAMING_XBOX
-    if (m_rootSigDefinedOnXbox)
+    if (!m_forceDisablePrecompiledShadersOnXbox)
     {
         ComPtr<IDxcBlob> rootSignatureBlob;
         THROW_IF_FAILED(result->GetOutput(
