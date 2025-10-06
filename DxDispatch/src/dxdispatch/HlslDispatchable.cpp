@@ -243,6 +243,37 @@ void HlslDispatchable::CompileWithDxc()
         compilerArgs[i] = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(m_desc.compilerArgs[i]);
     }
 
+#ifdef _GAMING_XBOX
+    if (m_forceDisablePrecompiledShadersOnXbox)
+    {
+        for (size_t i = 0; i + 1 < compilerArgs.size(); )
+        {
+            if ((compilerArgs[i] == L"-D" || compilerArgs[i] == L"/D"))
+            {
+                bool removeDefine = false;
+                const std::wstring& defineArg = compilerArgs[i + 1];
+                if (defineArg == L"__XBOX_STRIP_DXIL") // exact match
+                {
+                    removeDefine = true;
+                }
+                else if (defineArg.find(L"__XBOX_DX12_ROOT_SIGNATURE") != std::wstring::npos) // substring match
+                {
+                    removeDefine = true;
+                }
+                if (removeDefine)
+                {
+                    compilerArgs.erase(compilerArgs.begin() + i, compilerArgs.begin() + i + 2);                    
+                    continue; // re-check current index after erase
+                }
+            }
+            ++i;
+        }
+
+        compilerArgs.push_back(L"-D");
+        compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
+    }
+#endif
+
     // Automatically request debug information (PDB generation) unless the user disabled it with --no_pdb.
     // Only add -Zi if neither -Zi nor /Zi was already specified explicitly.
     if (!m_noPdb)
@@ -261,14 +292,6 @@ void HlslDispatchable::CompileWithDxc()
             compilerArgs.push_back(L"-Zi");
         }
     }
-
-#ifdef _GAMING_XBOX
-    if (m_forceDisablePrecompiledShadersOnXbox)
-    {
-        compilerArgs.push_back(L"-D");
-        compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
-    }
-#endif
 
     std::vector<LPCWSTR> lpcwstrArgs(compilerArgs.size());
     for (size_t i = 0; i < compilerArgs.size(); i++)
