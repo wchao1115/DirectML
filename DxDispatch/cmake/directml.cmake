@@ -77,6 +77,8 @@ function(init_directml_target_nuget target_name pkg_id pkg_version pkg_hash)
     )
     FetchContent_MakeAvailable(${content})
 
+    # Windows desktop gets DirectML.dll / DirectML.Debug.dll. Xbox GDK should NOT
+    # attempt to consume the Linux libdirectml.so, so restrict that to WSL only.
     if(TARGET_WINDOWS)
         if (TARGET_ARCH STREQUAL X86)
             set(bin_path ${${content}_SOURCE_DIR}/bin/x86-win)
@@ -89,7 +91,7 @@ function(init_directml_target_nuget target_name pkg_id pkg_version pkg_hash)
         endif()
         target_append_redist_file(${target_name} "${bin_path}/DirectML.dll")
         target_append_redist_file(${target_name} "${bin_path}/DirectML.Debug.dll")
-    else()
+    elseif(TARGET_WSL)
         set(bin_path ${${content}_SOURCE_DIR}/bin/x64-linux)
         target_append_redist_file(${target_name} "${bin_path}/libdirectml.so")
     endif()

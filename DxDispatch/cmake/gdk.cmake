@@ -61,10 +61,24 @@ function(init_gdk_target_system target_name edition)
     endif()
 
     set(dxcompiler_path "$ENV{GameDK}${edition}/GXDK/bin/${TARGET_XBOX_TYPE}/dxcompiler_${TARGET_XBOX_FILE_SUFFIX}.dll")
+    set(newbe_path "$ENV{GameDK}${edition}/GXDK/bin/${TARGET_XBOX_TYPE}/newbe_${TARGET_XBOX_FILE_SUFFIX}.dll")
+    set(xbsc_path  "$ENV{GameDK}${edition}/GXDK/bin/${TARGET_XBOX_TYPE}/xbsc_${TARGET_XBOX_FILE_SUFFIX}.dll")
 
     set_property(TARGET ${target_name} PROPERTY VS_GLOBAL_XdkEditionTarget "${edition}")
     set_property(TARGET ${target_name} PROPERTY DX_COMPONENT_CONFIG "System (${edition})")
     set_property(TARGET ${target_name} PROPERTY DX_COMPILER_PATH "${dxcompiler_path}")
+
+    # Collect additional DLLs (handled later the same way as dxcompiler by the dxcompiler target).
+    set(_gdk_additional_dlls)
+    if(EXISTS "${newbe_path}")
+        list(APPEND _gdk_additional_dlls "${newbe_path}")
+    endif()
+    if(EXISTS "${xbsc_path}")
+        list(APPEND _gdk_additional_dlls "${xbsc_path}")
+    endif()
+    # Store as a property so top-level CMakeLists can forward to add_dxcompiler_target.
+    list(JOIN _gdk_additional_dlls ";" _gdk_additional_dlls_joined)
+    set_property(TARGET ${target_name} PROPERTY DX_ADDITIONAL_DLLS "${_gdk_additional_dlls_joined}")
 endfunction()
 
 # -----------------------------------------------------------------------------

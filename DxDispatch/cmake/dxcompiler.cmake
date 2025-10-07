@@ -5,6 +5,7 @@
 #
 # - CACHE_PREFIX : string used to prefix cache variables associated with the function.
 # - GDK_DXCOMPILER_PATH : path to dxcompiler DLL (TYPE == gdk).
+# - GDK_EXTRA_DLLS      : optional list (semicolon-separated) of additional DLLs to treat like dxcompiler (TYPE == gdk).
 # 
 # The following cache variables are defined after calling the main function 
 # (all variable names are prefixed with the value of CACHE_PREFIX):
@@ -103,6 +104,17 @@ function(init_dxcompiler_target_gdk target_name dxcompiler_path)
     target_append_redist_file(${target_name} "${dxcompiler_path}")
     target_link_libraries(${target_name} INTERFACE dxcompiler_${TARGET_XBOX_FILE_SUFFIX}.lib)
     set_property(TARGET ${target_name} PROPERTY DX_COMPONENT_CONFIG "GDK")
+
+    # Any additional GDK DLLs passed in (after the dxcompiler_path) are appended as redistributables.
+    foreach(extra IN LISTS ARGN)
+        if(extra)
+            if(EXISTS "${extra}")
+                target_append_redist_file(${target_name} "${extra}")
+            else()
+                message(STATUS "[dxcompiler][gdk] Skipping missing extra DLL: ${extra}")
+            endif()
+        endif()
+    endforeach()
 endfunction()
 
 # -----------------------------------------------------------------------------
@@ -132,7 +144,7 @@ endfunction()
 # -----------------------------------------------------------------------------
 function(add_dxcompiler_target target_name)
     # Parse function args.
-    set(params CACHE_PREFIX GDK_DXCOMPILER_PATH)
+    set(params CACHE_PREFIX GDK_DXCOMPILER_PATH GDK_EXTRA_DLLS)
     cmake_parse_arguments(PARSE_ARGV 0 ARG "" "${params}" "")
     set(param_group DXCOMPILER)
 
@@ -149,7 +161,13 @@ function(add_dxcompiler_target target_name)
     if(type STREQUAL archive)
         init_dxcompiler_target_archive(${target_name} ${archive_url} ${archive_hash})
     elseif(type STREQUAL gdk)
-        init_dxcompiler_target_gdk(${target_name} ${ARG_GDK_DXCOMPILER_PATH})
+        # Expand semicolon-separated list into individual args for init function.
+        if(DEFINED ARG_GDK_EXTRA_DLLS)
+            string(REPLACE ";" ";" _extra_list "${ARG_GDK_EXTRA_DLLS}")
+            init_dxcompiler_target_gdk(${target_name} ${ARG_GDK_DXCOMPILER_PATH} ${_extra_list})
+        else()
+            init_dxcompiler_target_gdk(${target_name} ${ARG_GDK_DXCOMPILER_PATH})
+        endif()
     elseif(type STREQUAL source)
         init_dxcompiler_target_source(${target_name} ${source_tag})
     elseif(type STREQUAL none)

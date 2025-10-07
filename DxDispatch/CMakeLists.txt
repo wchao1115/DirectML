@@ -41,12 +41,13 @@ add_wil_target(wil CACHE_PREFIX DXD)
 include(cmake/gdk.cmake)
 add_gdk_target(gdk CACHE_PREFIX DXD)
 get_target_property(gdk_dxcompiler_path gdk DX_COMPILER_PATH)
+get_target_property(gdk_extra_dlls gdk DX_ADDITIONAL_DLLS)
 
 include(cmake/pix.cmake)
 add_pix_target(pix CACHE_PREFIX DXD)
 
 include(cmake/dxcompiler.cmake)
-add_dxcompiler_target(dxcompiler CACHE_PREFIX DXD GDK_DXCOMPILER_PATH ${gdk_dxcompiler_path})
+add_dxcompiler_target(dxcompiler CACHE_PREFIX DXD GDK_DXCOMPILER_PATH ${gdk_dxcompiler_path} GDK_EXTRA_DLLS "${gdk_extra_dlls}")
 get_target_property(dxcompiler_type dxcompiler DX_COMPONENT_CONFIG)
 
 include(cmake/d3d12.cmake)
