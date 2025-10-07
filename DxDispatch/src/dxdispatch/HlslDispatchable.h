@@ -48,6 +48,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_samplerDescriptorHeap;
     std::unordered_map<std::string, BindPoint> m_bindPoints;
     bool m_printHlslDisassembly = false;
+    bool m_reportReflection = false; // mirror of CommandLineArgs::ReportReflection()
     Microsoft::WRL::ComPtr<IDxDispatchLogger> m_logger;
     // Root parameter indices (descriptor tables) for CSU (CBV/SRV/UAV) and SAMPLER heaps.
     int m_csuRootParameterIndex = -1; // CBV/SRV/UAV descriptor table root parameter index

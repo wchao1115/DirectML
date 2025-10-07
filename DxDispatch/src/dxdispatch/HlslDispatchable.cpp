@@ -9,9 +9,20 @@
 using Microsoft::WRL::ComPtr;
 
 HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger)
-        : m_device(device), m_desc(desc), m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()), m_noPdb(args.NoPdb()),
-            m_printHlslDisassembly(args.PrintHlslDisassembly()), m_logger(logger)
+    :   m_device(device),
+        m_desc(desc),
+        m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()),
+        m_noPdb(args.NoPdb()),
+        m_printHlslDisassembly(args.PrintHlslDisassembly()),
+        m_reportReflection(args.ReportReflection()),
+        m_logger(logger)
 {
+    // Fold any command line -D defines directly into m_desc.compilerArgs so all arguments travel together.
+    for (const auto &define : args.GetDxcDefines())
+    {
+        m_desc.compilerArgs.push_back("-D");
+        m_desc.compilerArgs.push_back(define);
+    }
 }
 
 // Buffer classification helpers (textures handled separately).
@@ -147,6 +158,54 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
 {
     D3D12_SHADER_DESC shaderDesc = {};
     THROW_IF_FAILED(m_shaderReflection->GetDesc(&shaderDesc));
+
+    if (m_reportReflection)
+    {
+        // Collect UINT fields except Version & Flags; enums are omitted.
+        struct Field { const char* name; UINT value; } fields[] = {
+            {"ConstantBuffers", shaderDesc.ConstantBuffers},
+            {"BoundResources", shaderDesc.BoundResources},
+            {"InputParameters", shaderDesc.InputParameters},
+            {"OutputParameters", shaderDesc.OutputParameters},
+            {"InstructionCount", shaderDesc.InstructionCount},
+            {"TempRegisterCount", shaderDesc.TempRegisterCount},
+            {"TempArrayCount", shaderDesc.TempArrayCount},
+            {"DefCount", shaderDesc.DefCount},
+            {"DclCount", shaderDesc.DclCount},
+            {"TextureNormalInstructions", shaderDesc.TextureNormalInstructions},
+            {"TextureLoadInstructions", shaderDesc.TextureLoadInstructions},
+            {"TextureCompInstructions", shaderDesc.TextureCompInstructions},
+            {"TextureBiasInstructions", shaderDesc.TextureBiasInstructions},
+            {"TextureGradientInstructions", shaderDesc.TextureGradientInstructions},
+            {"FloatInstructionCount", shaderDesc.FloatInstructionCount},
+            {"IntInstructionCount", shaderDesc.IntInstructionCount},
+            {"UintInstructionCount", shaderDesc.UintInstructionCount},
+            {"StaticFlowControlCount", shaderDesc.StaticFlowControlCount},
+            {"DynamicFlowControlCount", shaderDesc.DynamicFlowControlCount},
+            {"MacroInstructionCount", shaderDesc.MacroInstructionCount},
+            {"ArrayInstructionCount", shaderDesc.ArrayInstructionCount},
+            {"CutInstructionCount", shaderDesc.CutInstructionCount},
+            {"EmitInstructionCount", shaderDesc.EmitInstructionCount},
+            {"GSMaxOutputVertexCount", shaderDesc.GSMaxOutputVertexCount},
+            {"PatchConstantParameters", shaderDesc.PatchConstantParameters},
+            {"cGSInstanceCount", shaderDesc.cGSInstanceCount},
+            {"cControlPoints", shaderDesc.cControlPoints},
+            {"cBarrierInstructions", shaderDesc.cBarrierInstructions},
+            {"cInterlockedInstructions", shaderDesc.cInterlockedInstructions},
+            {"cTextureStoreInstructions", shaderDesc.cTextureStoreInstructions},
+        };
+
+        std::string json;
+        json.reserve(560);
+        json.append("{\"Shader reflection\":{");
+        for (size_t i = 0; i < std::size(fields); ++i)
+        {
+            if (i) json.append(", ");
+            json.append(fmt::format("\"{}\":{}", fields[i].name, fields[i].value));
+        }
+        json.append("}}");
+        m_logger->LogInfo(json.c_str());
+    }
     
     std::vector<D3D12_SHADER_INPUT_BIND_DESC> shaderInputDescs(shaderDesc.BoundResources);
     for (uint32_t resourceIndex = 0; resourceIndex < shaderDesc.BoundResources; resourceIndex++)
