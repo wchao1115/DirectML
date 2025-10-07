@@ -107,6 +107,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             cxxopts::value<bool>()
         )
         (
+            "D,define",
+            "DXC preprocessor definition (may be repeated). Example: -D FOO=1 -D BAR",
+            cxxopts::value<std::vector<std::string>>()->default_value({})
+        )
+        (
             "a,adapter", 
             "Substring to match a desired DirectX adapter", 
             cxxopts::value<std::string>()->default_value(m_adapterSubstring)
@@ -159,6 +164,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
         (
             "print_hlsl_disassembly", 
             "Prints disassembled shader bytecode (HLSL dispatchables only)", 
+            cxxopts::value<bool>()
+        )
+        (
+            "R,report_reflection",
+            "When set, logs a JSON object with selected UINT fields from the D3D12 shader reflection descriptor (HLSL dispatchables only)",
             cxxopts::value<bool>()
         )
         (
@@ -385,6 +395,16 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     if (result.count("print_hlsl_disassembly"))
     {
         m_printHlslDisassembly = result["print_hlsl_disassembly"].as<bool>();
+    }
+
+    if (result.count("report_reflection"))
+    {
+        m_reportReflection = result["report_reflection"].as<bool>();
+    }
+
+    if (result.count("define"))
+    {
+        m_dxcDefines = result["define"].as<std::vector<std::string>>();
     }
 
     if (result.count("post_dispatch_barriers"))

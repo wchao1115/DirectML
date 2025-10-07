@@ -19,6 +19,7 @@ public:
     bool ShowDependencies() const { return m_showDependencies; }
     bool PrintHelp() const { return m_printHelp; }
     bool PrintHlslDisassembly() const { return m_printHlslDisassembly; }
+    bool ReportReflection() const { return m_reportReflection; }
     bool DebugLayersEnabled() const { return m_debugLayersEnabled; }
     TimingVerbosity GetTimingVerbosity() const { return m_timingVerbosity; }
     uint32_t MaxGpuTimeMeasurements() const { return m_maxGpuTimeMeasurements; }
@@ -72,6 +73,8 @@ public:
     bool PrintVerboseOnnxBindingInfo() const { return m_onnxPrintVerboseBindingInfo; } 
     bool OrtExtensionsEnabled() const { return m_ortExtensionsEnabled; }
     bool OnnxProfilingEnabled() const { return m_onnxProfilingEnabled; }
+    // DXC defines (from repeated -D command line arguments)
+    gsl::span<const std::string> GetDxcDefines() const { return m_dxcDefines; }
 
     void SetAdapter(IAdapter* adapter);
 private:
@@ -79,6 +82,7 @@ private:
     bool m_showDependencies = false;
     bool m_printHelp = false;
     bool m_printHlslDisassembly = false;
+    bool m_reportReflection = false; // When true, dumps select UINT fields from D3D12_SHADER_DESC as JSON
     bool m_debugLayersEnabled = false;
     TimingVerbosity m_timingVerbosity = TimingVerbosity::Basic;
     uint32_t m_maxGpuTimeMeasurements = 8192;
@@ -138,6 +142,8 @@ private:
     bool m_ortExtensionsEnabled = false;
     bool m_onnxProfilingEnabled = false;
     bool m_commandPrinting = false;
+    // Repeated -D arguments passed directly to DXC (each element is NAME or NAME=VALUE)
+    std::vector<std::string> m_dxcDefines;
 };
 
 DML_FEATURE_LEVEL GetDmlFeatureLevelFromString(const std::string& featureLevel);
