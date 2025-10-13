@@ -407,7 +407,7 @@ void Executor::operator()(const Model::ResolveGpuTimeCommand& /*command*/)
         auto gpuStats = gpuTimings.ComputeStats(m_commandLineArgs.MaxWarmupSamples());
         if (m_commandLineArgs.GetTimingVerbosity() == TimingVerbosity::Basic)
         {
-            m_logger->LogInfo(fmt::format("GPU Timing: {} samples, {:.6f} us average", gpuStats.hot.count, gpuStats.hot.average).c_str());
+            m_logger->LogInfo(fmt::format("GPU Timing: {} samples, {:.6f} us median", gpuStats.hot.count, gpuStats.hot.median).c_str());
         }
         else
         {
