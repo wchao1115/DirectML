@@ -24,7 +24,7 @@ struct Timer
     Timer() { start = std::chrono::steady_clock::now(); }
     Timer& Start() { start = std::chrono::steady_clock::now(); return *this; }
     Timer& End() { end = std::chrono::steady_clock::now(); return *this; }
-    double DurationInMilliseconds() { return std::chrono::duration<double>(end - start).count() * 1000; }
+    double DurationInMicroseconds() { return std::chrono::duration<double>(end - start).count() * 1e6; }
 };
 
 struct Timings
@@ -201,7 +201,7 @@ Executor::Executor(Model& model, std::shared_ptr<Device> device, const CommandLi
 
                 if (m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::Extended)
                 {
-                    m_logger->LogInfo(fmt::format("Initialize '{}': {:.4f} ms", dispatchable.first, timer.DurationInMilliseconds()).c_str());
+                    m_logger->LogInfo(fmt::format("Initialize '{}': {:.4f} us", dispatchable.first, timer.DurationInMicroseconds()).c_str());
                 }
             }
             catch (const std::exception& e)
@@ -321,14 +321,14 @@ void Executor::operator()(const Model::DispatchCommand& command)
             // Dispatch
             dispatchTimer.Start();
             dispatchable->Dispatch(command, iterationsCompleted, m_deferredBinding);
-            cpuTimings.rawSamples.push_back(dispatchTimer.End().DurationInMilliseconds() / m_commandLineArgs.DispatchRepeat());
+            cpuTimings.rawSamples.push_back(dispatchTimer.End().DurationInMicroseconds() / m_commandLineArgs.DispatchRepeat());
 
             // The dispatch interval defaults to 0 (dispatch as fast as possible). However, the user may increase it
             // to potentially introduce a sleep between each iteration.
-            double timeToSleep = std::max(0.0, m_commandLineArgs.MinimumDispatchIntervalInMilliseconds() - iterationTimer.End().DurationInMilliseconds());
+            double timeToSleep = std::max(0.0, m_commandLineArgs.MinimumDispatchIntervalInMilliseconds() - iterationTimer.End().DurationInMicroseconds());
 
             if (m_commandLineArgs.TimeToRunInMilliseconds() &&
-                loopTimer.End().DurationInMilliseconds() + timeToSleep > m_commandLineArgs.TimeToRunInMilliseconds().value())
+                loopTimer.End().DurationInMicroseconds() + timeToSleep > m_commandLineArgs.TimeToRunInMilliseconds().value())
             {
                 timedOut = true;
             }
@@ -357,7 +357,7 @@ void Executor::operator()(const Model::DispatchCommand& command)
     {
         if (m_commandLineArgs.GetTimingVerbosity() == TimingVerbosity::Basic)
         {
-            m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations, {:.4f} ms median (CPU)",
+            m_logger->LogInfo(fmt::format("Dispatch '{}': {} iterations, {:.4f} us median (CPU)",
                 command.dispatchableName,
                 iterationsCompleted,
                 cpuStats.hot.median
@@ -369,13 +369,13 @@ void Executor::operator()(const Model::DispatchCommand& command)
 
             if (cpuStats.cold.count > 0)
             {
-                m_logger->LogInfo(fmt::format("CPU Timings (Cold) : {} samples, {:.4f} ms average, {:.4f} ms min, {:.4f} ms median, {:.4f} ms max",
+                m_logger->LogInfo(fmt::format("CPU Timings (Cold) : {} samples, {:.4f} us average, {:.4f} us min, {:.4f} us median, {:.4f} us max",
                     cpuStats.cold.count, cpuStats.cold.average, cpuStats.cold.min, cpuStats.cold.median, cpuStats.cold.max
                 ).c_str());
             }
             if (cpuStats.hot.count > 0)
             {
-                m_logger->LogInfo(fmt::format("CPU Timings (Hot)  : {} samples, {:.4f} ms average, {:.4f} ms min, {:.4f} ms median, {:.4f} ms max",
+                m_logger->LogInfo(fmt::format("CPU Timings (Hot)  : {} samples, {:.4f} us average, {:.4f} us min, {:.4f} us median, {:.4f} us max",
                     cpuStats.hot.count, cpuStats.hot.average, cpuStats.hot.min, cpuStats.hot.median, cpuStats.hot.max
                 ).c_str());
             }
@@ -385,7 +385,7 @@ void Executor::operator()(const Model::DispatchCommand& command)
                 m_logger->LogInfo("The timings of each iteration: ");
                 for (uint32_t i = 0; i < iterationsCompleted; ++i)
                 {
-                    m_logger->LogInfo(fmt::format("iteration {}: {:.4f} ms (CPU)", i, cpuTimings.rawSamples[i]).c_str());
+                    m_logger->LogInfo(fmt::format("iteration {}: {:.4f} us (CPU)", i, cpuTimings.rawSamples[i]).c_str());
                 }
             }
         }
@@ -407,18 +407,18 @@ void Executor::operator()(const Model::ResolveGpuTimeCommand& /*command*/)
         auto gpuStats = gpuTimings.ComputeStats(m_commandLineArgs.MaxWarmupSamples());
         if (m_commandLineArgs.GetTimingVerbosity() == TimingVerbosity::Basic)
         {
-            m_logger->LogInfo(fmt::format("GPU Timing: {} samples, {:.6f} ms median", gpuStats.hot.count, gpuStats.hot.median).c_str());
+            m_logger->LogInfo(fmt::format("GPU Timing: {} samples, {:.6f} us average", gpuStats.hot.count, gpuStats.hot.average).c_str());
         }
         else
         {
             if (gpuStats.cold.count > 0)
             {
-                m_logger->LogInfo(fmt::format("GPU Timings (Cold) : {} samples, {:.6f} ms average, {:.6f} ms min, {:.6f} ms median, {:.6f} ms max",
+                m_logger->LogInfo(fmt::format("GPU Timings (Cold) : {} samples, {:.6f} us average, {:.6f} us min, {:.6f} us median, {:.6f} us max",
                     gpuStats.cold.count, gpuStats.cold.average, gpuStats.cold.min, gpuStats.cold.median, gpuStats.cold.max).c_str());
             }
             if (gpuStats.hot.count > 0)
             {
-                m_logger->LogInfo(fmt::format("GPU Timings (Hot)  : {} samples, {:.6f} ms average, {:.6f} ms min, {:.6f} ms median, {:.6f} ms max",
+                m_logger->LogInfo(fmt::format("GPU Timings (Hot)  : {} samples, {:.6f} us average, {:.6f} us min, {:.6f} us median, {:.6f} us max",
                     gpuStats.hot.count, gpuStats.hot.average, gpuStats.hot.min, gpuStats.hot.median, gpuStats.hot.max).c_str());
             }
             if (m_commandLineArgs.GetTimingVerbosity() >= TimingVerbosity::All)
@@ -426,7 +426,7 @@ void Executor::operator()(const Model::ResolveGpuTimeCommand& /*command*/)
                 m_logger->LogInfo("GPU per-sample timings:");
                 for (size_t i = 0; i < gpuTimings.rawSamples.size(); ++i)
                 {
-                    m_logger->LogInfo(fmt::format("gpu iteration {}: {:.6f} ms", i, gpuTimings.rawSamples[i]).c_str());
+                    m_logger->LogInfo(fmt::format("gpu iteration {}: {:.6f} us", i, gpuTimings.rawSamples[i]).c_str());
                 }
             }
         }

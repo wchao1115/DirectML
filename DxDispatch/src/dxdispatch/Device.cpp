@@ -856,7 +856,7 @@ std::vector<double> Device::ResolveTimingSamples()
 
     for (uint32_t i = 0; i < samples.size(); ++i) 
     {
-        uint64_t timestampDelta = (timestamps[2 * i + 1] - timestamps[2 * i]) * 1000;
+        uint64_t timestampDelta = (timestamps[2 * i + 1] - timestamps[2 * i]) * 1e6; // microseconds
         samples[i] = double(timestampDelta) / frequency / m_dispatchRepeat;
     }
 
