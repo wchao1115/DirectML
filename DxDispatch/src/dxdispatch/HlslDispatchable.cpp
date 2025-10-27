@@ -154,7 +154,7 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
     return std::make_tuple(descriptorRanges, bindPoints);
 }
 
-void HlslDispatchable::CreateRootSignatureAndBindingMap()
+void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 {
     D3D12_SHADER_DESC shaderDesc = {};
     THROW_IF_FAILED(m_shaderReflection->GetDesc(&shaderDesc));
@@ -197,13 +197,15 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
 
         std::string json;
         json.reserve(560);
-        json.append("{\"Shader reflection\":{");
+        json.append(fmt::format("\"{}\":{{", id));
+        json.append(fmt::format("\"ShaderName\":\"{}\",", m_desc.sourcePath.stem().string()));
+        json.append("\"Reflection\":{");
         for (size_t i = 0; i < std::size(fields); ++i)
         {
             if (i) json.append(", ");
             json.append(fmt::format("\"{}\":{}", fields[i].name, fields[i].value));
         }
-        json.append("}}");
+        json.append("}},");
         m_logger->LogInfo(json.c_str());
     }
     
@@ -216,10 +218,8 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
     auto [allDescriptorRanges, bindPoints] = ReflectBindingData(shaderInputDescs);
     m_bindPoints = bindPoints;
 
-#ifdef _GAMING_XBOX
     if (m_rootSignature)
         return;
-#endif
 
     std::vector<D3D12_ROOT_PARAMETER1> rootParameters;
     std::vector<D3D12_DESCRIPTOR_RANGE1> csuRanges;
@@ -278,7 +278,7 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap()
         IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
 }
 
-void HlslDispatchable::CompileWithDxc()
+void HlslDispatchable::CompileWithDxc(std::string id)
 {
     if (!m_device->GetDxcCompiler())
     {
@@ -466,7 +466,7 @@ void HlslDispatchable::CompileWithDxc()
             IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
     }
 #endif
-    CreateRootSignatureAndBindingMap();
+    CreateRootSignatureAndBindingMap(id);
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = m_rootSignature.Get();
@@ -513,11 +513,11 @@ void HlslDispatchable::CompileWithDxc()
     }
 }
 
-void HlslDispatchable::Initialize()
+void HlslDispatchable::Initialize(std::string id)
 {
     if (m_desc.compiler == Model::HlslDispatchableDesc::Compiler::DXC)
     {
-        CompileWithDxc();
+        CompileWithDxc(id);
     }
     else
     {

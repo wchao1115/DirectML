@@ -195,7 +195,7 @@ Executor::Executor(Model& model, std::shared_ptr<Device> device, const CommandLi
             {
                 timer.Start();
                 PIXBeginEvent(PIX_COLOR(128,255,0), L"Init");
-                dispatchable.second->Initialize();
+                dispatchable.second->Initialize(dispatchable.first);
                 PIXEndEvent();
                 timer.End();
 
