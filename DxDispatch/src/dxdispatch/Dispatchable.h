@@ -34,7 +34,7 @@ struct Dispatchable
 
     virtual ~Dispatchable() = default;
 
-    virtual void Initialize() = 0;
+    virtual void Initialize(std::string id) = 0;
     virtual void Bind(const Bindings& bindings, uint32_t iteration) = 0;
     virtual void Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings) = 0;
 };

@@ -7,7 +7,7 @@ class HlslDispatchable : public Dispatchable
 public:
     HlslDispatchable(std::shared_ptr<Device> device, const Model::HlslDispatchableDesc& desc, const CommandLineArgs& args, IDxDispatchLogger* logger);
 
-    void Initialize() final;
+    void Initialize(std::string id) final;
     void Bind(const Bindings& bindings, uint32_t iteration) final;
     void Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings) final;
 
@@ -32,8 +32,8 @@ public:
     };
 
 private:
-    void CompileWithDxc();
-    void CreateRootSignatureAndBindingMap();
+    void CompileWithDxc(std::string id);
+    void CreateRootSignatureAndBindingMap(std::string id);
 
 private:
     std::shared_ptr<Device> m_device;
