@@ -1,125 +1,85 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    
     "title": "Model",
     "description": "A model file",
     "type": "object",
     "required": [ "dispatchables", "commands" ],
-
-    "properties": 
-    {
-        "resources": 
-        {
+    "properties": {
+        "resources": {
             "type": "object",
             "description": "D3D12 resources available for binding",
             "patternProperties": { ".*": { "$ref": "#/$defs/resource" } }
         },
-        "dispatchables": 
-        {
+        "dispatchables": {
             "type": "object",
-            "description": "Compute programs (HLSL only) available for execution",
+            "description": "HLSL dispatchables (compute or graphics) available for execution",
             "patternProperties": { ".*": { "$ref": "#/$defs/dispatchable" } }
         },
-        "commands": 
-        {
+        "commands": {
             "type": "array",
             "description": "Commands to process when running the model",
             "items": { "$ref": "#/$defs/command" }
         }
     },
-
-    "$defs": 
-    {
-        "dmlTensorDataType": 
-        {
-            "enum": 
-            [
-                "DML_TENSOR_DATA_TYPE_UNKNOWN",
-                "UNKNOWN",
-                "DML_TENSOR_DATA_TYPE_FLOAT16",
-                "FLOAT16",
-                "DML_TENSOR_DATA_TYPE_FLOAT32",
-                "FLOAT32",
-                "DML_TENSOR_DATA_TYPE_FLOAT64",
-                "FLOAT64",
-                "DML_TENSOR_DATA_TYPE_UINT8",
-                "UINT8",
-                "DML_TENSOR_DATA_TYPE_UINT16",
-                "UINT16",
-                "DML_TENSOR_DATA_TYPE_UINT32",
-                "UINT32",
-                "DML_TENSOR_DATA_TYPE_UINT64",
-                "UINT64",
-                "DML_TENSOR_DATA_TYPE_INT8",
-                "INT8",
-                "DML_TENSOR_DATA_TYPE_INT16",
-                "INT16",
-                "DML_TENSOR_DATA_TYPE_INT32",
-                "INT32",
-                "DML_TENSOR_DATA_TYPE_INT64",
-                "INT64"
+    "$defs": {
+        "dmlTensorDataType": {
+            "enum": [
+                "DML_TENSOR_DATA_TYPE_UNKNOWN", "UNKNOWN",
+                "DML_TENSOR_DATA_TYPE_FLOAT16", "FLOAT16",
+                "DML_TENSOR_DATA_TYPE_FLOAT32", "FLOAT32",
+                "DML_TENSOR_DATA_TYPE_FLOAT64", "FLOAT64",
+                "DML_TENSOR_DATA_TYPE_UINT8", "UINT8",
+                "DML_TENSOR_DATA_TYPE_UINT16", "UINT16",
+                "DML_TENSOR_DATA_TYPE_UINT32", "UINT32",
+                "DML_TENSOR_DATA_TYPE_UINT64", "UINT64",
+                "DML_TENSOR_DATA_TYPE_INT8", "INT8",
+                "DML_TENSOR_DATA_TYPE_INT16", "INT16",
+                "DML_TENSOR_DATA_TYPE_INT32", "INT32",
+                "DML_TENSOR_DATA_TYPE_INT64", "INT64"
             ]
         },
-
-        
-
-        "arrayInitializer":
-        {
+        "arrayInitializer": {
             "type": "array",
             "description": "Elements used to initialize the buffer contents",
             "items": ["number", "string"]
         },
-
-        "constantInitializer": 
-        {
+        "constantInitializer": {
             "type": "object",
-            "properties": 
-            {
-                "valueCount": 
-                {
+            "properties": {
+                "valueCount": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "description": "Length of the buffer in elements"
                 },
-                "value": 
-                {
+                "value": {
                     "type": ["number", "string"],
                     "description": "Value to fill"
                 }
             },
-            "required": [ "valueCount", "value" ]
+            "required": ["valueCount", "value"]
         },
-
-        "sequenceInitializer": 
-        {
+        "sequenceInitializer": {
             "type": "object",
-            "properties": 
-            {
-                "valueCount": 
-                {
+            "properties": {
+                "valueCount": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "description": "Length of the buffer in elements"
                 },
-                "valueStart": 
-                {
+                "valueStart": {
                     "type": ["number", "string"],
                     "description": "First value in the buffer"
                 },
-                "valueDelta": 
-                {
+                "valueDelta": {
                     "type": ["number", "string"],
                     "description": "Delta between elements in the buffer"
                 }
             },
-            "required": [ "valueCount", "valueStart", "valueDelta" ]
+            "required": ["valueCount", "valueStart", "valueDelta"]
         },
-
-        "buffer": 
-        {
+        "buffer": {
             "type": "object",
-            "properties": 
-            {
+            "properties": {
                 "layout": {
                     "type": "array",
                     "description": "Optional structured layout for constant buffers: ordered list of members with offsets and sizes.",
@@ -135,10 +95,8 @@
                         "additionalProperties": true
                     }
                 },
-                "initialValues": 
-                { 
-                    "oneOf":
-                    [
+                "initialValues": {
+                    "oneOf": [
                         { "$ref": "#/$defs/arrayInitializer" },
                         { "$ref": "#/$defs/constantInitializer" },
                         { "$ref": "#/$defs/sequenceInitializer" },
@@ -150,53 +108,47 @@
                                 "properties": {
                                     "name": { "type": "string" },
                                     "type": { "type": "string" },
-                                    "value": { "type": ["number","string","array","object","boolean"] },
+                                    "value": { "type": ["number", "string", "array", "object", "boolean"] },
                                     "offset": { "type": "integer", "minimum": 0 },
                                     "size": { "type": "integer", "minimum": 1 }
                                 },
-                                "required": ["name","type","value"],
+                                "required": ["name", "type", "value"],
                                 "additionalProperties": true
                             }
                         }
                     ],
                     "description": "Initial values in the buffer"
                 },
-                "initialValuesDataType": 
-                { 
+                "initialValuesDataType": {
                     "$ref": "#/$defs/dmlTensorDataType",
                     "description": "Data type of the elements in 'initialValues'"
                 },
-                "initialValuesOffsetInBytes":
-                {
+                "initialValuesOffsetInBytes": {
                     "type": "integer",
                     "inclusiveMinimum": 0,
                     "description": "Offset to start writing initialValues in the buffer.",
                     "default": 0
                 },
-                "sizeInBytes":
-                {
+                "sizeInBytes": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "description": "Size of the buffer. Must be at least as large as size of initialValues."
                 }
             },
-            "required": [ "initialValues", "initialValuesDataType" ]
+            "required": ["initialValues", "initialValuesDataType"]
         },
-
-        "texture":
-        {
+        "texture": {
             "type": "object",
-            "properties":
-            {
+            "properties": {
                 "width": { "type": "integer", "minimum": 1, "description": "Texture width in texels" },
                 "height": { "type": "integer", "minimum": 1, "description": "Texture height in texels" },
                 "format": { "type": "string", "description": "DXGI_FORMAT (defaults to R8G8B8A8_UNORM if omitted)" },
-                "dimension": { "type": "string", "enum": ["2D","2DArray","3D","Cube","CubeArray"], "description": "Texture dimension. '2DArray' explicitly denotes an array texture (multiple layers). For '2D' the arraySize must be 1.", "default": "2D" },
+                "dimension": { "type": "string", "enum": ["2D", "2DArray", "3D", "Cube", "CubeArray"], "description": "Texture dimension. '2DArray' explicitly denotes an array texture (multiple layers). For '2D' the arraySize must be 1.", "default": "2D" },
                 "depth": { "type": "integer", "minimum": 1, "description": "Texture depth in texels (only for 3D)" },
                 "mipLevels": { "type": "integer", "minimum": 1, "maximum": 1, "description": "Number of mip levels (currently must be 1)", "default": 1 },
-                "arraySize": { "type": "integer", "minimum": 1, "description": "Array size (for 2DArray or CubeArray physical faces)" , "default": 1 },
+                "arraySize": { "type": "integer", "minimum": 1, "description": "Array size (for 2DArray or CubeArray physical faces)", "default": 1 },
                 "cubeCount": { "type": "integer", "minimum": 1, "description": "Logical cube count for CubeArray (faces = cubeCount*6)" },
-                "usage": { "type": "string", "enum": ["srv","uav","srv_uav"], "description": "Binding usage: srv (sample/read), uav (read/write), srv_uav (both)" , "default": "srv" },
+                "usage": { "type": "string", "enum": ["srv", "uav", "srv_uav"], "description": "Binding usage: srv (sample/read), uav (read/write), srv_uav (both)", "default": "srv" },
                 "initialValues": {
                     "description": "Optional initial data: object with sourcePath or raw byte array",
                     "oneOf": [
@@ -213,31 +165,26 @@
             ],
             "additionalProperties": true
         },
-
-        "sampler":
-        {
+        "sampler": {
             "type": "object",
-            "properties":
-            {
+            "properties": {
                 "filter": { "type": "string", "enum": ["point", "linear", "anisotropic"], "description": "Sampler filter mode", "default": "linear" },
-                "addressU": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
-                "addressV": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
-                "addressW": { "type": "string", "enum": ["wrap","clamp","mirror","border","mirror_once"], "default": "wrap" },
+                "addressU": { "type": "string", "enum": ["wrap", "clamp", "mirror", "border", "mirror_once"], "default": "wrap" },
+                "addressV": { "type": "string", "enum": ["wrap", "clamp", "mirror", "border", "mirror_once"], "default": "wrap" },
+                "addressW": { "type": "string", "enum": ["wrap", "clamp", "mirror", "border", "mirror_once"], "default": "wrap" },
                 "mipLODBias": { "type": "number", "default": 0.0 },
                 "maxAnisotropy": { "type": "integer", "minimum": 1, "default": 1 },
-                "comparisonFunc": { "type": "string", "enum": ["less","lequal","greater","gequal","equal","notequal","never","always"], "default": "always" },
+                "comparisonFunc": { "type": "string", "enum": ["less", "lequal", "greater", "gequal", "equal", "notequal", "never", "always"], "default": "always" },
                 "borderColor": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
                 "minLOD": { "type": "number", "default": 0.0 },
                 "maxLOD": { "type": "number", "default": 3.402823e+38 }
             },
             "additionalProperties": true
         },
-
-        "resource":
-        {
+        "resource": {
             "type": "object",
             "properties": {
-                "kind": { "type": "string", "enum": ["buffer","texture","sampler"], "default": "buffer", "description": "Resource kind discriminator (buffer|texture|sampler). If omitted, defaults to buffer." }
+                "kind": { "type": "string", "enum": ["buffer", "texture", "sampler"], "default": "buffer", "description": "Resource kind discriminator (buffer|texture|sampler). If omitted, defaults to buffer." }
             },
             "allOf": [
                 { "if": { "properties": { "kind": { "const": "texture" } } }, "then": { "$ref": "#/$defs/texture" } },
@@ -245,112 +192,111 @@
                 { "if": { "anyOf": [ { "properties": { "kind": { "const": "buffer" } } }, { "not": { "required": ["kind"] } } ] }, "then": { "$ref": "#/$defs/buffer" } }
             ]
         },
-    
-        "hlslDispatchable": 
-        {
+        "hlslStageShared": {
             "type": "object",
-            "properties": 
-            {
-                "sourcePath": 
-                {
-                    "type": "string",
-                    "description": "Path to the HLSL source file"
-                },
-                "compiler": 
-                {
-                    "type": "string",
-                    "enum": [ "dxc" ],
-                    "description": "The HLSL compiler"
-                },
-                "compilerArgs": 
-                {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Arguments for the HLSL compiler"
+            "description": "Single HLSL stage (compute). Uses dispatchable-level compilerArgs array.",
+            "properties": {
+                "sourcePath": { "type": "string", "description": "Path to the HLSL source file for this stage" },
+                "entryPoint": { "type": "string", "description": "Entry point function name", "default": "main" }
+            },
+            "required": ["sourcePath"],
+            "additionalProperties": false
+        },
+        "hlslStagePer": {
+            "type": "object",
+            "description": "Single graphics stage (vertex or pixel) with its own compilerArgs.",
+            "properties": {
+                "sourcePath": { "type": "string", "description": "Path to the HLSL source file for this stage" },
+                "entryPoint": { "type": "string", "description": "Entry point function name", "default": "main" },
+                "compilerArgs": { "type": "array", "items": { "type": "string" }, "description": "Compiler arguments specific to this stage." }
+            },
+            "required": ["sourcePath", "compilerArgs"],
+            "additionalProperties": false
+        },
+        "hlslDispatchable": {
+            "type": "object",
+            "description": "Compute (single CS stage with shared compilerArgs) or graphics (VS+PS each with separate compilerArgs).",
+            "properties": {
+                "compiler": { "type": "string", "enum": ["dxc"], "description": "The HLSL compiler" },
+                "compilerArgs": { "type": "array", "items": { "type": "string" }, "description": "Compiler arguments applied to the compute stage only." },
+                "compute": { "$ref": "#/$defs/hlslStageShared" },
+                "graphics": {
+                    "type": "object",
+                    "properties": {
+                        "vertex": { "$ref": "#/$defs/hlslStagePer" },
+                        "pixel": { "$ref": "#/$defs/hlslStagePer" },
+                        "rtvFormats": { "type": "array", "items": { "type": "string" }, "description": "Render target DXGI formats" },
+                        "dsvFormat": { "type": "string", "description": "Optional depth-stencil DXGI format" },
+                        "primitiveTopology": { "type": "string", "enum": ["trianglelist", "linelist", "pointlist"], "default": "trianglelist", "description": "Primitive topology for graphics pipeline" },
+                        "vertexCount": { "type": "integer", "minimum": 1, "description": "Vertex count for non-indexed DrawInstanced" }
+                    },
+                    "required": ["vertex", "pixel"],
+                    "additionalProperties": false
                 }
             },
-            "required": [ "sourcePath", "compiler", "compilerArgs" ]
+            "required": ["compiler"],
+            "allOf": [
+                { "if": { "required": ["compute"] }, "then": { "not": { "required": ["graphics"] }, "properties": { "graphics": false, "compilerArgs": { "type": "array", "minItems": 1 } } } },
+                { "if": { "required": ["graphics"] }, "then": { "not": { "required": ["compute"] }, "properties": { "compute": false, "compilerArgs": false, "graphics": { "required": ["vertex", "pixel"], "properties": { "vertexCount": {"type": "integer", "minimum": 1} } } } } }
+            ],
+            "additionalProperties": false
         },
-        
-        "dispatchable": 
-        {
+        "dispatchable": {
             "type": "object",
-            "properties":
-            {
-                "type": { "type": "string", "enum": ["hlsl"], "description": "(Deprecated) Must be 'hlsl' if present" }
-            },
-            "required": [],
             "allOf": [ { "$ref": "#/$defs/hlslDispatchable" } ]
         },
-        
-        "binding": 
-        {
+        "binding": {
             "type": "object",
-            "properties": 
-            {
-                "name": 
-                {
+            "properties": {
+                "name": {
                     "type": "string",
                     "description": "The name of the resource in the model"
                 },
-                "replicate":
-                {
+                "replicate": {
                     "type": "boolean",
                     "description": "If true and the shader expects an array of descriptors (e.g. Texture2D X[N]) but only a single source resource is supplied, that resource will be replicated to fill all N descriptor slots. If false (default) and counts mismatch, an error is raised.",
                     "default": false
                 },
-                "format": 
-                {
+                "format": {
                     "type": "string",
                     "description": "The DXGI_FORMAT associated with the resource view"
                 },
-                "elementCount": 
-                {
+                "elementCount": {
                     "type": "integer",
                     "description": "The number of elements in the source buffer"
                 },
-                "elementSizeInBytes": 
-                {
+                "elementSizeInBytes": {
                     "type": "integer",
                     "description": "The size of each element/structure in the source buffer"
                 },
-                "elementOffset": 
-                {
+                "elementOffset": {
                     "type": "integer",
                     "description": "The offset to the first element in the source buffer"
                 },
-                "counter": 
-                {
+                "counter": {
                     "type": "string",
                     "description": "The name of the counter resource in the model"
                 },
-                "shape":
-                {
+                "shape": {
                     "type": "array",
                     "items": { "type": "integer", "exclusiveMinimum": 0 },
                     "description": "Optional shape for tensor bindings in ONNX dispatchables."
                 }
             }
         },
-
-        "dispatchCommand":
-        {
+        "dispatchCommand": {
             "type": "object",
-            "properties":
-            {
-                "dispatchable":
-                {
+            "properties": {
+                "dispatchable": {
                     "type": "string",
                     "description": "Name of the dispatchable to execute"
                 },
-                "bindings":
-                {
+                "bindings": {
                     "type": "object",
                     "description": "Resource bindings for execution. Each binding key maps to either a resource name (string) or a single binding object. Enumerating arrays of distinct resources is intentionally unsupported; descriptor arrays must use a single binding with 'replicate': true.",
                     "patternProperties": { ".*": { "oneOf": [ { "$ref": "#/$defs/binding" }, { "type": "string" } ] } }
                 },
-                "threadGroupCount":
-                {
+                "threadGroupCount": {
                     "type": "array",
                     "items": { "type": "integer", "exclusiveMinimum": 0 },
                     "minItems": 3,
@@ -361,57 +307,35 @@
             },
             "required": ["dispatchable", "bindings"]
         },
-
-        "printCommand":
-        {
+        "printCommand": {
             "type": "object",
-            "properties":
-            {
-                "resource":
-                {
+            "properties": {
+                "resource": {
                     "type": "string",
                     "description": "Name of the resource to display"
                 },
-                "verbose":
-                {
+                "verbose": {
                     "type": "boolean",
                     "description": "Whether to print raw data values too"
                 }
             },
             "required": ["resource"]
         },
-
-        "command": 
-        {
+        "command": {
             "type": "object",
-            "properties":
-            {
-                "type": 
-                {
+            "properties": {
+                "type": {
                     "type": "string",
                     "enum": ["dispatch", "print", "writeFile", "resolveGpuTime"],
                     "description": "The type of command"
                 }
             },
             "required": ["type"],
-            "allOf":
-            [
-                {
-                    "if": { "properties": { "type": { "const": "dispatch" } } },
-                    "then": { "$ref": "#/$defs/dispatchCommand" }
-                },
-                {
-                    "if": { "properties": { "type": { "const": "print" } } },
-                    "then": { "$ref": "#/$defs/printCommand" }
-                },
-                {
-                    "if": { "properties": { "type": { "const": "writeFile" } } },
-                    "then": { "$ref": "#/$defs/printCommand" }
-                },
-                {
-                    "if": { "properties": { "type": { "const": "resolveGpuTime" } } },
-                    "then": { "type": "object" }
-                }
+            "allOf": [
+                { "if": { "properties": { "type": { "const": "dispatch" } } }, "then": { "$ref": "#/$defs/dispatchCommand" } },
+                { "if": { "properties": { "type": { "const": "print" } } }, "then": { "$ref": "#/$defs/printCommand" } },
+                { "if": { "properties": { "type": { "const": "writeFile" } } }, "then": { "$ref": "#/$defs/printCommand" } },
+                { "if": { "properties": { "type": { "const": "resolveGpuTime" } } }, "then": { "type": "object" } }
             ]
         }
     }

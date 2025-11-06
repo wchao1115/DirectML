@@ -32,6 +32,7 @@ public:
     bool PreferCustomHeaps() const { return m_preferCustomHeaps; }
     bool DisableAgilitySDK() const { return m_disableAgilitySDK; }
     bool NoPdb() const { return m_noPdb; }
+    const std::string& HlslLangVersion() const { return m_hlslLangVer; }
     const std::string& AdapterSubstring() const { return m_adapterSubstring; }
 
     const std::optional<std::filesystem::path>& ModelPath() const { return m_modelPath; }
@@ -99,6 +100,7 @@ private:
     bool m_uavBarrierAfterDispatch = true;
     bool m_aliasingBarrierAfterDispatch = false;
     DML_FEATURE_LEVEL m_dmlFeatureLevel = DML_FEATURE_LEVEL_5_0;
+    std::string m_hlslLangVer = "2018";
     std::string m_adapterSubstring = "";
     std::optional<std::filesystem::path> m_modelPath;
     std::optional<std::filesystem::path> m_inputRelPath;

@@ -13,15 +13,26 @@ HlslDispatchable::HlslDispatchable(std::shared_ptr<Device> device, const Model::
         m_desc(desc),
         m_forceDisablePrecompiledShadersOnXbox(args.ForceDisablePrecompiledShadersOnXbox()),
         m_noPdb(args.NoPdb()),
+        m_hlslLangVer(args.HlslLangVersion()),
         m_printHlslDisassembly(args.PrintHlslDisassembly()),
         m_reportReflection(args.ReportReflection()),
         m_logger(logger)
 {
-    // Fold any command line -D defines directly into m_desc.compilerArgs so all arguments travel together.
+    // Fold any command line -D defines directly into appropriate argument vectors.
     for (const auto &define : args.GetDxcDefines())
     {
-        m_desc.compilerArgs.push_back("-D");
-        m_desc.compilerArgs.push_back(define);
+        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+        {
+            m_desc.vsCompilerArgs.push_back("-D");
+            m_desc.vsCompilerArgs.push_back(define);
+            m_desc.psCompilerArgs.push_back("-D");
+            m_desc.psCompilerArgs.push_back(define);
+        }
+        else
+        {
+            m_desc.compilerArgs.push_back("-D");
+            m_desc.compilerArgs.push_back(define);
+        }
     }
 }
 
@@ -33,15 +44,15 @@ HlslDispatchable::BufferViewType GetViewType(const D3D12_SHADER_INPUT_BIND_DESC&
     case D3D_SIT_TEXTURE: // Could be Buffer (Dimension==BUFFER) or real texture (handled elsewhere)
     case D3D_SIT_UAV_RWTYPED:
     case D3D_SIT_TBUFFER:
-        return HlslDispatchable::BufferViewType::Typed;
+    return HlslDispatchable::BufferViewType::Typed;
     case D3D_SIT_CBUFFER:
     case D3D_SIT_STRUCTURED:
     case D3D_SIT_UAV_RWSTRUCTURED:
     case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
-        return HlslDispatchable::BufferViewType::Structured;
+    return HlslDispatchable::BufferViewType::Structured;
     case D3D_SIT_BYTEADDRESS:
     case D3D_SIT_UAV_RWBYTEADDRESS:
-        return HlslDispatchable::BufferViewType::Raw;
+    return HlslDispatchable::BufferViewType::Raw;
     default:
         throw std::invalid_argument("Shader input type is not supported for buffer classification");
     }
@@ -156,66 +167,118 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
 
 void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 {
-    D3D12_SHADER_DESC shaderDesc = {};
-    THROW_IF_FAILED(m_shaderReflection->GetDesc(&shaderDesc));
-
-    if (m_reportReflection)
+    // For compute pipelines we only have m_shaderReflection.
+    // For graphics we may have both m_vsShaderReflection and m_shaderReflection (PS). Merge resources.
+    std::vector<D3D12_SHADER_INPUT_BIND_DESC> mergedInputDescs;
+    mergedInputDescs.reserve(32);
+    auto addReflectionResources = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> refl)
     {
-        // Collect UINT fields except Version & Flags; enums are omitted.
-        struct Field { const char* name; UINT value; } fields[] = {
-            {"ConstantBuffers", shaderDesc.ConstantBuffers},
-            {"BoundResources", shaderDesc.BoundResources},
-            {"InputParameters", shaderDesc.InputParameters},
-            {"OutputParameters", shaderDesc.OutputParameters},
-            {"InstructionCount", shaderDesc.InstructionCount},
-            {"TempRegisterCount", shaderDesc.TempRegisterCount},
-            {"TempArrayCount", shaderDesc.TempArrayCount},
-            {"DefCount", shaderDesc.DefCount},
-            {"DclCount", shaderDesc.DclCount},
-            {"TextureNormalInstructions", shaderDesc.TextureNormalInstructions},
-            {"TextureLoadInstructions", shaderDesc.TextureLoadInstructions},
-            {"TextureCompInstructions", shaderDesc.TextureCompInstructions},
-            {"TextureBiasInstructions", shaderDesc.TextureBiasInstructions},
-            {"TextureGradientInstructions", shaderDesc.TextureGradientInstructions},
-            {"FloatInstructionCount", shaderDesc.FloatInstructionCount},
-            {"IntInstructionCount", shaderDesc.IntInstructionCount},
-            {"UintInstructionCount", shaderDesc.UintInstructionCount},
-            {"StaticFlowControlCount", shaderDesc.StaticFlowControlCount},
-            {"DynamicFlowControlCount", shaderDesc.DynamicFlowControlCount},
-            {"MacroInstructionCount", shaderDesc.MacroInstructionCount},
-            {"ArrayInstructionCount", shaderDesc.ArrayInstructionCount},
-            {"CutInstructionCount", shaderDesc.CutInstructionCount},
-            {"EmitInstructionCount", shaderDesc.EmitInstructionCount},
-            {"GSMaxOutputVertexCount", shaderDesc.GSMaxOutputVertexCount},
-            {"PatchConstantParameters", shaderDesc.PatchConstantParameters},
-            {"cGSInstanceCount", shaderDesc.cGSInstanceCount},
-            {"cControlPoints", shaderDesc.cControlPoints},
-            {"cBarrierInstructions", shaderDesc.cBarrierInstructions},
-            {"cInterlockedInstructions", shaderDesc.cInterlockedInstructions},
-            {"cTextureStoreInstructions", shaderDesc.cTextureStoreInstructions},
+        D3D12_SHADER_DESC sd = {};
+        THROW_IF_FAILED(refl->GetDesc(&sd));
+        for (UINT i = 0; i < sd.BoundResources; ++i)
+        {
+            D3D12_SHADER_INPUT_BIND_DESC bindDesc = {};
+            THROW_IF_FAILED(refl->GetResourceBindingDesc(i, &bindDesc));
+            mergedInputDescs.push_back(bindDesc);
+        }
+    };
+
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_vsShaderReflection)
+    {
+        // Add VS then PS resources; skip duplicates (same name+type+space+bind point) keeping first occurrence.
+        std::vector<D3D12_SHADER_INPUT_BIND_DESC> temp;
+        addReflectionResources(m_vsShaderReflection);
+        addReflectionResources(m_shaderReflection); // PS
+
+        // Deduplicate while preserving order.
+        std::unordered_map<std::string, size_t> seen;
+        std::vector<D3D12_SHADER_INPUT_BIND_DESC> unique;
+        unique.reserve(mergedInputDescs.size());
+        for (auto &d : mergedInputDescs)
+        {
+            auto it = seen.find(d.Name);
+            if (it == seen.end())
+            {
+                seen[d.Name] = unique.size();
+                unique.push_back(d);
+            }
+            else
+            {
+                // Validate compatibility; if mismatch throw.
+                auto &existing = unique[it->second];
+                bool compatible = existing.Type == d.Type && existing.BindPoint == d.BindPoint && existing.Space == d.Space && existing.BindCount == d.BindCount;
+                if (!compatible)
+                {
+                    throw std::invalid_argument(fmt::format("Resource '{}': incompatible duplicate between VS and PS (type/slot mismatch).", d.Name));
+                }
+            }
+        }
+        mergedInputDescs.swap(unique);
+    }
+    else
+    {
+        addReflectionResources(m_shaderReflection);
+    }
+
+    if (m_reportReflection && m_shaderReflection)
+    {
+        auto ReportShaderDesc = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> refl)->void
+        {
+            D3D12_SHADER_DESC shaderDesc = {};
+            THROW_IF_FAILED(refl->GetDesc(&shaderDesc));
+            struct Field { const char* name; UINT value; } fields[] = {
+                {"ConstantBuffers", shaderDesc.ConstantBuffers},
+                {"BoundResources", shaderDesc.BoundResources},
+                {"InputParameters", shaderDesc.InputParameters},
+                {"OutputParameters", shaderDesc.OutputParameters},
+                {"InstructionCount", shaderDesc.InstructionCount},
+                {"TempRegisterCount", shaderDesc.TempRegisterCount},
+                {"TempArrayCount", shaderDesc.TempArrayCount},
+                {"DefCount", shaderDesc.DefCount},
+                {"DclCount", shaderDesc.DclCount},
+                {"TextureNormalInstructions", shaderDesc.TextureNormalInstructions},
+                {"TextureLoadInstructions", shaderDesc.TextureLoadInstructions},
+                {"TextureCompInstructions", shaderDesc.TextureCompInstructions},
+                {"TextureBiasInstructions", shaderDesc.TextureBiasInstructions},
+                {"TextureGradientInstructions", shaderDesc.TextureGradientInstructions},
+                {"FloatInstructionCount", shaderDesc.FloatInstructionCount},
+                {"IntInstructionCount", shaderDesc.IntInstructionCount},
+                {"UintInstructionCount", shaderDesc.UintInstructionCount},
+                {"StaticFlowControlCount", shaderDesc.StaticFlowControlCount},
+                {"DynamicFlowControlCount", shaderDesc.DynamicFlowControlCount},
+                {"MacroInstructionCount", shaderDesc.MacroInstructionCount},
+                {"ArrayInstructionCount", shaderDesc.ArrayInstructionCount},
+                {"CutInstructionCount", shaderDesc.CutInstructionCount},
+                {"EmitInstructionCount", shaderDesc.EmitInstructionCount},
+                {"GSMaxOutputVertexCount", shaderDesc.GSMaxOutputVertexCount},
+                {"PatchConstantParameters", shaderDesc.PatchConstantParameters},
+                {"cGSInstanceCount", shaderDesc.cGSInstanceCount},
+                {"cControlPoints", shaderDesc.cControlPoints},
+                {"cBarrierInstructions", shaderDesc.cBarrierInstructions},
+                {"cInterlockedInstructions", shaderDesc.cInterlockedInstructions},
+                {"cTextureStoreInstructions", shaderDesc.cTextureStoreInstructions},
+            };
+            std::string json;
+            json.reserve(560);
+            json.append(fmt::format("\"{}\":{{", id));
+            json.append(fmt::format("\"ShaderName\":\"{}\",", m_desc.sourcePath.stem().string()));
+            json.append("\"Reflection\":{");
+            for (size_t i = 0; i < std::size(fields); ++i)
+            {
+                if (i) json.append(", ");
+                json.append(fmt::format("\"{}\":{}", fields[i].name, fields[i].value));
+            }
+            json.append("}},");
+            m_logger->LogInfo(json.c_str());
         };
 
-        std::string json;
-        json.reserve(560);
-        json.append(fmt::format("\"{}\":{{", id));
-        json.append(fmt::format("\"ShaderName\":\"{}\",", m_desc.sourcePath.stem().string()));
-        json.append("\"Reflection\":{");
-        for (size_t i = 0; i < std::size(fields); ++i)
-        {
-            if (i) json.append(", ");
-            json.append(fmt::format("\"{}\":{}", fields[i].name, fields[i].value));
-        }
-        json.append("}},");
-        m_logger->LogInfo(json.c_str());
-    }
-    
-    std::vector<D3D12_SHADER_INPUT_BIND_DESC> shaderInputDescs(shaderDesc.BoundResources);
-    for (uint32_t resourceIndex = 0; resourceIndex < shaderDesc.BoundResources; resourceIndex++)
-    {
-        THROW_IF_FAILED(m_shaderReflection->GetResourceBindingDesc(resourceIndex, &shaderInputDescs[resourceIndex]));
+        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_vsShaderReflection)
+            ReportShaderDesc(m_vsShaderReflection);
+
+        ReportShaderDesc(m_shaderReflection);
     }
 
-    auto [allDescriptorRanges, bindPoints] = ReflectBindingData(shaderInputDescs);
+    auto [allDescriptorRanges, bindPoints] = ReflectBindingData(gsl::make_span(mergedInputDescs));
     m_bindPoints = bindPoints;
 
     if (m_rootSignature)
@@ -296,41 +359,17 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     sourceBuffer.Size = source->GetBufferSize();
     sourceBuffer.Encoding = DXC_CP_ACP;
 
-    std::vector<std::wstring> compilerArgs(m_desc.compilerArgs.size());
-    for (size_t i = 0; i < m_desc.compilerArgs.size(); i++)
+    std::vector<std::wstring> compilerArgs;
+    std::wstring hv = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(m_hlslLangVer);
+    compilerArgs.push_back(std::wstring(L"-HV ") + hv);
+    for (const auto &argUtf8 : m_desc.compilerArgs)
     {
-        compilerArgs[i] = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(m_desc.compilerArgs[i]);
+        compilerArgs.push_back(std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(argUtf8));
     }
 
 #ifdef _GAMING_XBOX
     if (m_forceDisablePrecompiledShadersOnXbox)
-    {
-        for (size_t i = 0; i + 1 < compilerArgs.size(); )
-        {
-            if ((compilerArgs[i] == L"-D" || compilerArgs[i] == L"/D"))
-            {
-                bool removeDefine = false;
-                const std::wstring& defineArg = compilerArgs[i + 1];
-                if (defineArg == L"__XBOX_STRIP_DXIL") // exact match
-                {
-                    removeDefine = true;
-                }
-                else if (defineArg.find(L"__XBOX_DX12_ROOT_SIGNATURE") != std::wstring::npos) // substring match
-                {
-                    removeDefine = true;
-                }
-                if (removeDefine)
-                {
-                    compilerArgs.erase(compilerArgs.begin() + i, compilerArgs.begin() + i + 2);                    
-                    continue; // re-check current index after erase
-                }
-            }
-            ++i;
-        }
-
-        compilerArgs.push_back(L"-D");
-        compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
-    }
+        DisablePrecompiledShaderOnXbox(compilerArgs);
 #endif
 
     // Automatically request debug information (PDB generation) unless the user disabled it with --no_pdb.
@@ -452,20 +491,9 @@ void HlslDispatchable::CompileWithDxc(std::string id)
 
 #ifdef _GAMING_XBOX
     if (!m_forceDisablePrecompiledShadersOnXbox)
-    {
-        ComPtr<IDxcBlob> rootSignatureBlob;
-        THROW_IF_FAILED(result->GetOutput(
-            DXC_OUT_ROOT_SIGNATURE,
-            IID_PPV_ARGS(&rootSignatureBlob),
-            nullptr));
-
-        THROW_IF_FAILED(m_device->D3D()->CreateRootSignature(
-            0,
-            rootSignatureBlob->GetBufferPointer(),
-            rootSignatureBlob->GetBufferSize(),
-            IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
-    }
+        CreateRootSignatureFromPrecompiledShaderOnXbox(result);
 #endif
+
     CreateRootSignatureAndBindingMap(id);
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -513,15 +541,234 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     }
 }
 
-void HlslDispatchable::Initialize(std::string id)
+// Compile graphics pipeline (VS + PS). Reflection currently taken from PS only for resource bindings.
+void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
 {
-    if (m_desc.compiler == Model::HlslDispatchableDesc::Compiler::DXC)
+    if (!m_device->GetDxcCompiler())
     {
-        CompileWithDxc(id);
+        throw std::runtime_error("DXC is not available for this platform");
+    }
+
+    auto Utf8ToWide = [](const std::string& s)
+    { 
+        return std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(s); 
+    };
+
+    auto InjectStageArgs = [&](std::vector<std::string>& stageArgs, const std::string& entry, const char* profileFlag)
+    {
+        stageArgs.push_back("-HV " + m_hlslLangVer);
+
+        bool hasE = false, hasT = false;
+        for (size_t i = 0; i < stageArgs.size(); ++i)
+        {
+            std::string low = stageArgs[i];
+            std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+            if (low == "-e" || low == "/e") 
+            { 
+                hasE = true; 
+            }
+            else if (low == "-t" || low == "/t") 
+            { 
+                hasT = true; 
+            }
+        }
+
+        if (!hasE)
+        {
+            stageArgs.push_back("-E");
+            stageArgs.push_back(entry);
+        }
+
+        if (!hasT)
+        {
+            stageArgs.push_back("-T");
+            stageArgs.push_back(profileFlag);
+        }
+    };
+
+    InjectStageArgs(m_desc.vsCompilerArgs, m_desc.vsEntryPoint, "vs_6_6");
+    InjectStageArgs(m_desc.psCompilerArgs, m_desc.psEntryPoint, "ps_6_6");
+
+    // Local compile lambda adapted for per-stage args.
+    auto CompileOnePerStage = [&](const std::filesystem::path& path,
+                                  const std::vector<std::string>& stageArgs,
+                                  ComPtr<IDxcBlob>& outBlob,
+                                  Microsoft::WRL::ComPtr<ID3D12ShaderReflection>* outReflection,
+                                  bool createRootSigXbox = false) -> void
+    {
+        ComPtr<IDxcBlobEncoding> source;
+        THROW_IF_FAILED(m_device->GetDxcUtils()->LoadFile(path.c_str(), nullptr, &source));
+        DxcBuffer srcBuf{ source->GetBufferPointer(), source->GetBufferSize(), DXC_CP_ACP };
+
+        std::vector<std::wstring> wargs;
+        wargs.reserve(stageArgs.size());
+        for (auto& a : stageArgs) 
+            wargs.push_back(Utf8ToWide(a));
+
+#ifdef _GAMING_XBOX
+        if (m_forceDisablePrecompiledShadersOnXbox)
+            DisablePrecompiledShaderOnXbox(wargs);
+#endif
+
+        if (!m_noPdb)
+        {
+            bool hasZi = false;
+            for (auto& a : wargs)
+            {
+                if (a == L"-Zi" || a == L"/Zi") 
+                { 
+                    hasZi = true; 
+                    break; 
+                }
+            }
+            if (!hasZi) 
+                wargs.push_back(L"-Zi");
+        }
+
+        std::vector<LPCWSTR> lpargs(wargs.size());
+        for (size_t i = 0; i < wargs.size(); ++i) 
+            lpargs[i] = wargs[i].c_str();
+
+        ComPtr<IDxcResult> result;
+        THROW_IF_FAILED(m_device->GetDxcCompiler()->Compile(
+            &srcBuf,
+            lpargs.data(),
+            (UINT)lpargs.size(),
+            m_device->GetDxcIncludeHandler(),
+            IID_PPV_ARGS(&result)));
+
+        ComPtr<IDxcBlobUtf8> errors;
+        THROW_IF_FAILED(result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr));
+        if (errors && errors->GetStringLength()) 
+        { 
+            m_logger->LogError(errors->GetStringPointer()); 
+        }
+
+        HRESULT status = S_OK; 
+        THROW_IF_FAILED(result->GetStatus(&status));
+        if (FAILED(status)) 
+        { 
+            throw std::runtime_error("Graphics shader compilation failed"); 
+        }
+
+        THROW_IF_FAILED(result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&outBlob), nullptr));
+
+        if (outReflection)
+        {
+            ComPtr<IDxcBlob> reflBlob; 
+            THROW_IF_FAILED(result->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(&reflBlob), nullptr));
+            DxcBuffer reflBuf{ reflBlob->GetBufferPointer(), reflBlob->GetBufferSize(), DXC_CP_ACP };
+            THROW_IF_FAILED(m_device->GetDxcUtils()->CreateReflection(&reflBuf, IID_PPV_ARGS(outReflection->ReleaseAndGetAddressOf())));
+        }
+
+#ifdef _GAMING_XBOX
+        if (createRootSigXbox && !m_forceDisablePrecompiledShadersOnXbox)
+            CreateRootSignatureFromPrecompiledShaderOnXbox(result);
+#endif        
+    };
+
+    CompileOnePerStage(m_desc.pixelShaderPath, m_desc.psCompilerArgs, m_psBlob, &m_shaderReflection); // pixel reflection stored in m_shaderReflection
+    CompileOnePerStage(m_desc.vertexShaderPath, m_desc.vsCompilerArgs, m_vsBlob, &m_vsShaderReflection, true); // vertex reflection stored in m_vsShaderReflection
+
+    CreateRootSignatureAndBindingMap(id);
+
+    // Build graphics PSO (minimal defaults)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSignature.Get();
+    pso.VS = { m_vsBlob->GetBufferPointer(), m_vsBlob->GetBufferSize() };
+    pso.PS = { m_psBlob->GetBufferPointer(), m_psBlob->GetBufferSize() };
+    pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+
+    if (m_desc.dsvFormat.has_value())
+    {
+        pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        pso.DSVFormat = m_desc.dsvFormat.value();
     }
     else
     {
-        throw std::invalid_argument("FXC isn't supported yet");
+        D3D12_DEPTH_STENCIL_DESC ds{}; 
+        ds.DepthEnable = FALSE; 
+        ds.StencilEnable = FALSE; 
+        pso.DepthStencilState = ds; 
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    }
+
+    switch (m_desc.primitiveTopology)
+    {
+        case D3D_PRIMITIVE_TOPOLOGY_POINTLIST: 
+            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT; 
+            break;
+        case D3D_PRIMITIVE_TOPOLOGY_LINELIST: 
+            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; 
+            break;
+        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: 
+        default: 
+            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; 
+            break;
+    }
+
+    pso.NumRenderTargets = (UINT)std::min<size_t>(m_desc.rtvFormats.size(), 8);
+    for (UINT i = 0; i < pso.NumRenderTargets; i++) 
+    {
+        pso.RTVFormats[i] = m_desc.rtvFormats[i];
+    }
+
+    pso.SampleMask = UINT_MAX;
+    pso.SampleDesc.Count = 1;
+    THROW_IF_FAILED(m_device->D3D()->CreateGraphicsPipelineState(&pso, IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
+
+    // Descriptor heaps (same logic as compute path)
+    uint32_t numCSU = 0;
+    uint32_t numSamplers = 0;
+    for (auto& kv : m_bindPoints)
+    {
+        switch (kv.second.descriptorType)
+        {
+            case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER: 
+                numSamplers += kv.second.bindCount; 
+                break;
+            case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+            case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+            case D3D12_DESCRIPTOR_RANGE_TYPE_UAV: 
+                numCSU += kv.second.bindCount; 
+                break;
+            default: break;
+        }
+    }
+
+    if (numCSU)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC h{};
+        h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        h.NumDescriptors = numCSU;
+        h.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(&h, IID_GRAPHICS_PPV_ARGS(m_descriptorHeap.ReleaseAndGetAddressOf())));
+    }
+
+    if (numSamplers)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC h{};
+        h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        h.NumDescriptors = numSamplers;
+        h.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(&h, IID_GRAPHICS_PPV_ARGS(m_samplerDescriptorHeap.ReleaseAndGetAddressOf())));
+    }
+}
+
+void HlslDispatchable::Initialize(std::string id)
+{
+    if (m_desc.compiler != Model::HlslDispatchableDesc::Compiler::DXC)
+    {
+        throw std::invalid_argument("Only DXC compiler is supported.");
+    }
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+    {
+        CompileGraphicsWithDxc(id);
+    }
+    else
+    {
+        CompileWithDxc(id);
     }
 }
 
@@ -924,18 +1171,94 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         }
     }
 
-    m_device->GetCommandList()->SetComputeRootSignature(m_rootSignature.Get());
-    m_device->GetCommandList()->SetPipelineState(m_pipelineState.Get());
-    ID3D12DescriptorHeap* descriptorHeaps[2];
-    UINT heapCount = 0;
+    ID3D12DescriptorHeap* descriptorHeaps[2]; UINT heapCount = 0;
     if (m_descriptorHeap) descriptorHeaps[heapCount++] = m_descriptorHeap.Get();
     if (m_samplerDescriptorHeap) descriptorHeaps[heapCount++] = m_samplerDescriptorHeap.Get();
     if (heapCount) m_device->GetCommandList()->SetDescriptorHeaps(heapCount, descriptorHeaps);
-    if (m_csuRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_csuRootParameterIndex, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
-    if (m_samplerRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_samplerRootParameterIndex, m_samplerDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+    {
+        m_device->GetCommandList()->SetGraphicsRootSignature(m_rootSignature.Get());
+        m_device->GetCommandList()->SetPipelineState(m_pipelineState.Get());
+        if (m_csuRootParameterIndex >= 0) m_device->GetCommandList()->SetGraphicsRootDescriptorTable(m_csuRootParameterIndex, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
+        if (m_samplerRootParameterIndex >= 0) m_device->GetCommandList()->SetGraphicsRootDescriptorTable(m_samplerRootParameterIndex, m_samplerDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    }
+    else
+    {
+        m_device->GetCommandList()->SetComputeRootSignature(m_rootSignature.Get());
+        m_device->GetCommandList()->SetPipelineState(m_pipelineState.Get());
+        if (m_csuRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_csuRootParameterIndex, m_descriptorHeap->GetGPUDescriptorHandleForHeapStart());
+        if (m_samplerRootParameterIndex >= 0) m_device->GetCommandList()->SetComputeRootDescriptorTable(m_samplerRootParameterIndex, m_samplerDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    }
 }
 
 void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings)
 {
-    m_device->RecordDispatch(args.dispatchableName.c_str(), args.threadGroupCount[0], args.threadGroupCount[1], args.threadGroupCount[2]);
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+    {
+        // Issue a simple non-indexed draw. Vertex buffers & render targets are expected to be set up externally for now.
+        if (m_desc.vertexCount == 0)
+        {
+            throw std::runtime_error("Graphics dispatchable missing vertexCount.");
+        }
+        m_device->GetCommandList()->IASetPrimitiveTopology(m_desc.primitiveTopology);
+        m_device->GetCommandList()->DrawInstanced(m_desc.vertexCount, 1, 0, 0);
+    }
+    else
+    {
+        m_device->RecordDispatch(args.dispatchableName.c_str(), args.threadGroupCount[0], args.threadGroupCount[1], args.threadGroupCount[2]);
+    }
 }
+
+#ifdef _GAMING_XBOX
+void HlslDispatchable::CreateRootSignatureFromPrecompiledShaderOnXbox(ComPtr<IDxcResult> result)
+{
+    assert(result && !m_forceDisablePrecompiledShadersOnXbox && !m_rootSignature);
+
+    ComPtr<IDxcBlob> rootSignatureBlob;
+    if (FAILED(result->GetOutput(
+        DXC_OUT_ROOT_SIGNATURE,
+        IID_PPV_ARGS(&rootSignatureBlob),
+        nullptr)))
+    {
+        return; // No embedded root signature.
+    }
+
+    if (!rootSignatureBlob || rootSignatureBlob->GetBufferSize() == 0)
+        return;
+
+    THROW_IF_FAILED(m_device->D3D()->CreateRootSignature(
+        0,
+        rootSignatureBlob->GetBufferPointer(),
+        rootSignatureBlob->GetBufferSize(),
+        IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
+}
+
+void HlslDispatchable::DisablePrecompiledShaderOnXbox(std::vector<std::wstring>& compilerArgs)
+{
+    for (size_t i = 0; i + 1 < compilerArgs.size(); )
+    {
+        if ((compilerArgs[i] == L"-D" || compilerArgs[i] == L"/D"))
+        {
+            bool removeDefine = false;
+            const std::wstring& defineArg = compilerArgs[i + 1];
+            if (defineArg == L"__XBOX_STRIP_DXIL") // exact match
+            {
+                removeDefine = true;
+            }
+            else if (defineArg.find(L"__XBOX_DX12_ROOT_SIGNATURE") != std::wstring::npos) // substring match
+            {
+                removeDefine = true;
+            }
+            if (removeDefine)
+            {
+                compilerArgs.erase(compilerArgs.begin() + i, compilerArgs.begin() + i + 2);                    
+                continue; // re-check current index after erase
+            }
+        }
+        ++i;
+    }
+
+    compilerArgs.push_back(L"-D");
+    compilerArgs.push_back(L"__XBOX_DISABLE_PRECOMPILE");
+}
+#endif
