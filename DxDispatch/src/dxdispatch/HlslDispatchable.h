@@ -48,12 +48,12 @@ private:
     bool m_noPdb;
     // HLSL language version string from command line (e.g. "2018", "2021"). Used to inject -HV flag.
     std::string m_hlslLangVer;
-    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_shaderReflection;
-    // Optional vertex stage reflection when pipelineKind==Graphics. Pixel stage reflection stored in m_shaderReflection.
-    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_vsShaderReflection;
+    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_shaderReflection; // Vertex or compute reflection
+    // Graphics: optional pixel shader reflection. If absent (VS-only pipeline) this is null.
+    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_psShaderReflection;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
-    // Graphics shader blobs (VS/PS) when pipelineKind==Graphics
+    // Graphics shader blobs (VS + optional PS) when pipelineKind==Graphics
     Microsoft::WRL::ComPtr<IDxcBlob> m_vsBlob;
     Microsoft::WRL::ComPtr<IDxcBlob> m_psBlob;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;

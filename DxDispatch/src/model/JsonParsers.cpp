@@ -1796,43 +1796,43 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         }
 
         const auto& vertex = graphics["vertex"];
-        const auto& pixel = graphics["pixel"]; // required by schema
-        if (!vertex.IsObject() || !pixel.IsObject())
+        if (!vertex.IsObject())
         {
-            throw std::invalid_argument("graphics.vertex & graphics.pixel must be objects");
+            throw std::invalid_argument("graphics.vertex must be an object");
         }
 
-        // Per-stage compilerArgs (required by schema)
+        bool hasPixel = graphics.HasMember("pixel") && graphics["pixel"].IsObject();
+        const rapidjson::Value* pixelPtr = hasPixel ? &graphics["pixel"] : nullptr;
+
+        // Per-stage compilerArgs (vertex required; pixel optional)
         auto vsArgsIt = vertex.FindMember("compilerArgs");
-        auto psArgsIt = pixel.FindMember("compilerArgs");
         if (vsArgsIt == vertex.MemberEnd() || !vsArgsIt->value.IsArray())
         {
             throw std::invalid_argument("graphics.vertex.compilerArgs must be an array");
         }
+        for (auto& a : vsArgsIt->value.GetArray()) { desc.vsCompilerArgs.push_back(a.GetString()); }
 
-        if (psArgsIt == pixel.MemberEnd() || !psArgsIt->value.IsArray())
+        if (pixelPtr)
         {
-            throw std::invalid_argument("graphics.pixel.compilerArgs must be an array");
-        }
-
-        for (auto& a : vsArgsIt->value.GetArray()) 
-        { 
-            desc.vsCompilerArgs.push_back(a.GetString()); 
-        }
-
-        for (auto& a : psArgsIt->value.GetArray()) 
-        { 
-            desc.psCompilerArgs.push_back(a.GetString()); 
+            auto psArgsIt = pixelPtr->FindMember("compilerArgs");
+            if (psArgsIt == pixelPtr->MemberEnd() || !psArgsIt->value.IsArray())
+            {
+                throw std::invalid_argument("graphics.pixel.compilerArgs must be an array when pixel stage is present");
+            }
+            for (auto& a : psArgsIt->value.GetArray()) { desc.psCompilerArgs.push_back(a.GetString()); }
         }
 
         // Vertex stage
         std::string vsSource = ParseStringField(vertex, "sourcePath");
         desc.vertexShaderPath = ResolveInputFilePath(parentPath, vsSource);
         desc.vsEntryPoint = ParseStringField(vertex, "entryPoint", false, "main");
-        // Pixel stage
-        std::string psSource = ParseStringField(pixel, "sourcePath");
-        desc.pixelShaderPath = ResolveInputFilePath(parentPath, psSource);
-        desc.psEntryPoint = ParseStringField(pixel, "entryPoint", false, "main");
+        // Optional pixel stage
+        if (pixelPtr)
+        {
+            std::string psSource = ParseStringField(*pixelPtr, "sourcePath");
+            desc.pixelShaderPath = ResolveInputFilePath(parentPath, psSource);
+            desc.psEntryPoint = ParseStringField(*pixelPtr, "entryPoint", false, "main");
+        }
         // Inject -E/-T if absent per stage
         auto injectStage = [](std::vector<std::string>& args, const std::string& entry, const char* profile)
         {
@@ -1860,7 +1860,10 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         };
 
         injectStage(desc.vsCompilerArgs, desc.vsEntryPoint, "vs_6_6");
-        injectStage(desc.psCompilerArgs, desc.psEntryPoint, "ps_6_6");
+        if (!desc.pixelShaderPath.empty())
+        {
+            injectStage(desc.psCompilerArgs, desc.psEntryPoint, "ps_6_6");
+        }
 
         // Formats & topology
         if (graphics.HasMember("rtvFormats"))
@@ -1875,9 +1878,10 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
                 desc.rtvFormats.push_back(ParseDxgiFormat(f));
             }
         }
-        if (desc.rtvFormats.empty())
+        if (desc.rtvFormats.empty() && !desc.pixelShaderPath.empty())
         {
-            desc.rtvFormats.push_back(DXGI_FORMAT_R8G8B8A8_UNORM); // default single render target
+            // Default only when pixel stage exists; VS-only pipeline may have zero render targets.
+            desc.rtvFormats.push_back(DXGI_FORMAT_R8G8B8A8_UNORM);
         }
         if (graphics.HasMember("dsvFormat") && graphics["dsvFormat"].IsString())
         {

@@ -123,7 +123,7 @@ public:
         Compiler compiler;
         std::vector<std::string> compilerArgs; // Compute-only compiler arguments
 
-        // Graphics extensions (optional). Presence of vertexShader & pixelShader switches pipelineKind to Graphics.
+        // Graphics extensions (optional). Presence of 'graphics' object with a vertex shader switches pipelineKind to Graphics. Pixel shader is optional.
         PipelineKind pipelineKind = PipelineKind::Compute;
         std::filesystem::path vertexShaderPath;    // Only valid when pipelineKind==Graphics
         std::filesystem::path pixelShaderPath;     // Only valid when pipelineKind==Graphics
