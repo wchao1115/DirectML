@@ -110,9 +110,31 @@ public:
             DXC
         };
 
-        std::filesystem::path sourcePath;
+        enum class PipelineKind
+        {
+            Compute,
+            Graphics
+        };
+
+        // Compiler model:
+        //  - Compute: uses dispatchable-level compilerArgs (shared vector below)
+        //  - Graphics: uses per-stage compiler argument vectors (vsCompilerArgs / psCompilerArgs)
+        std::filesystem::path sourcePath; // Compute shader source when pipelineKind==Compute
         Compiler compiler;
-        std::vector<std::string> compilerArgs;
+        std::vector<std::string> compilerArgs; // Compute-only compiler arguments
+
+        // Graphics extensions (optional). Presence of vertexShader & pixelShader switches pipelineKind to Graphics.
+        PipelineKind pipelineKind = PipelineKind::Compute;
+        std::filesystem::path vertexShaderPath;    // Only valid when pipelineKind==Graphics
+        std::filesystem::path pixelShaderPath;     // Only valid when pipelineKind==Graphics
+        std::string vsEntryPoint = "main";
+        std::string psEntryPoint = "main";
+        std::vector<std::string> vsCompilerArgs;   // Graphics-only vertex stage args
+        std::vector<std::string> psCompilerArgs;   // Graphics-only pixel stage args
+        std::vector<DXGI_FORMAT> rtvFormats;       // Empty => compute; Graphics requires >=1
+        std::optional<DXGI_FORMAT> dsvFormat;      // Optional depth/stencil format
+        D3D_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        uint32_t vertexCount = 0;                  // For DrawInstanced (indexed draw unsupported in initial implementation)
     };
 
     struct DispatchableDesc

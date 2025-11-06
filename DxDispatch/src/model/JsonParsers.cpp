@@ -1698,9 +1698,8 @@ Model::ResourceDesc ParseModelResourceDesc(
 Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem::path& parentPath, const rapidjson::Value& object)
 {
     Model::HlslDispatchableDesc desc = {};
-    auto sourcePath = ParseStringField(object, "sourcePath");
-    desc.sourcePath = ResolveInputFilePath(parentPath, sourcePath);
 
+    // Compiler (required)
     auto compilerStr = ParseStringField(object, "compiler", false, "dxc");
     if (!_stricmp(compilerStr.data(), "dxc"))
     {
@@ -1711,18 +1710,216 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         throw std::invalid_argument("Unrecognized compiler");
     }
 
-    auto compilerArgsField = object.FindMember("compilerArgs");
-    if (compilerArgsField == object.MemberEnd() || !compilerArgsField->value.IsArray())
+    // Compiler arguments model:
+    //  - Compute: requires top-level compilerArgs array.
+    //  - Graphics: per-stage compilerArgs arrays under graphics.vertex / graphics.pixel.
+
+    bool hasCompute = object.HasMember("compute");
+    bool hasGraphics = object.HasMember("graphics");
+    
+    if (hasCompute && hasGraphics)
     {
-        throw std::invalid_argument("Field 'compilerArgs' is required and must be an array.");
+        throw std::invalid_argument("Dispatchable cannot define both 'compute' and 'graphics'.");
     }
 
-    desc.compilerArgs.reserve(compilerArgsField->value.GetArray().Size());
-    for (auto& compilerArg : compilerArgsField->value.GetArray())
+    if (hasCompute)
     {
-        desc.compilerArgs.push_back(compilerArg.GetString());
-    }
+        auto compilerArgsValue = object.FindMember("compilerArgs");
 
+        // Top-level compilerArgs are required for compute pipelines (schema enforces this).
+        if (compilerArgsValue == object.MemberEnd() || !compilerArgsValue->value.IsArray())
+        {
+            throw std::invalid_argument("Compute pipeline requires a top-level 'compilerArgs' array.");
+        }
+        // Populate desc.compilerArgs from JSON before any -E/-T injection so user-supplied flags are preserved.
+        for (auto& v : compilerArgsValue->value.GetArray())
+        {
+            if (!v.IsString())
+            {
+                throw std::invalid_argument("Each element of 'compilerArgs' must be a string.");
+            }
+            desc.compilerArgs.push_back(v.GetString());
+        }
+
+        const auto& compute = object["compute"];
+        if (!compute.IsObject())
+        {
+            throw std::invalid_argument("'compute' must be an object");
+        }
+        // Source path
+        std::string csSource = ParseStringField(compute, "sourcePath");
+        desc.sourcePath = ResolveInputFilePath(parentPath, csSource);
+        // Entry point (default main)
+        std::string entry = ParseStringField(compute, "entryPoint", false, "main");
+        // Inject entry/profile only if not already supplied (search for -E/-T or /E /T)
+        bool hasE = false, hasT = false;
+        for (size_t i = 0; i < desc.compilerArgs.size(); ++i)
+        {
+            std::string low = desc.compilerArgs[i];
+            std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+            if (low == "-e" || low == "/e")
+            {
+                hasE = true;
+            }
+            else if (low == "-t" || low == "/t")
+            {
+                hasT = true;
+            }
+        }
+
+        if (!hasE)
+        {
+            desc.compilerArgs.push_back("-E");
+            desc.compilerArgs.push_back(entry);
+        }
+
+        if (!hasT)
+        {
+            desc.compilerArgs.push_back("-T");
+            desc.compilerArgs.push_back("cs_6_6");
+        }
+
+        desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Compute;
+    }
+    else if (hasGraphics)
+    {
+        // Guard against accidental presence of top-level compilerArgs for graphics (schema should already forbid this).
+        if (object.HasMember("compilerArgs"))
+        {
+            throw std::invalid_argument("Top-level 'compilerArgs' is only valid for compute pipelines; graphics uses per-stage compilerArgs.");
+        }
+
+        const auto& graphics = object["graphics"];
+        if (!graphics.IsObject())
+        {
+            throw std::invalid_argument("'graphics' must be an object");
+        }
+
+        const auto& vertex = graphics["vertex"];
+        const auto& pixel = graphics["pixel"]; // required by schema
+        if (!vertex.IsObject() || !pixel.IsObject())
+        {
+            throw std::invalid_argument("graphics.vertex & graphics.pixel must be objects");
+        }
+
+        // Per-stage compilerArgs (required by schema)
+        auto vsArgsIt = vertex.FindMember("compilerArgs");
+        auto psArgsIt = pixel.FindMember("compilerArgs");
+        if (vsArgsIt == vertex.MemberEnd() || !vsArgsIt->value.IsArray())
+        {
+            throw std::invalid_argument("graphics.vertex.compilerArgs must be an array");
+        }
+
+        if (psArgsIt == pixel.MemberEnd() || !psArgsIt->value.IsArray())
+        {
+            throw std::invalid_argument("graphics.pixel.compilerArgs must be an array");
+        }
+
+        for (auto& a : vsArgsIt->value.GetArray()) 
+        { 
+            desc.vsCompilerArgs.push_back(a.GetString()); 
+        }
+
+        for (auto& a : psArgsIt->value.GetArray()) 
+        { 
+            desc.psCompilerArgs.push_back(a.GetString()); 
+        }
+
+        // Vertex stage
+        std::string vsSource = ParseStringField(vertex, "sourcePath");
+        desc.vertexShaderPath = ResolveInputFilePath(parentPath, vsSource);
+        desc.vsEntryPoint = ParseStringField(vertex, "entryPoint", false, "main");
+        // Pixel stage
+        std::string psSource = ParseStringField(pixel, "sourcePath");
+        desc.pixelShaderPath = ResolveInputFilePath(parentPath, psSource);
+        desc.psEntryPoint = ParseStringField(pixel, "entryPoint", false, "main");
+        // Inject -E/-T if absent per stage
+        auto injectStage = [](std::vector<std::string>& args, const std::string& entry, const char* profile)
+        {
+            bool hasE = false, hasT = false;
+            for (auto& s : args)
+            {
+                std::string low = s; std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+                if (low == "-e" || low == "/e") 
+                    hasE = true; 
+                else if (low == "-t" || low == "/t") 
+                    hasT = true;
+            }
+
+            if (!hasE) 
+            { 
+                args.push_back("-E"); 
+                args.push_back(entry); 
+            }
+
+            if (!hasT) 
+            { 
+                args.push_back("-T"); 
+                args.push_back(profile); 
+            }
+        };
+
+        injectStage(desc.vsCompilerArgs, desc.vsEntryPoint, "vs_6_6");
+        injectStage(desc.psCompilerArgs, desc.psEntryPoint, "ps_6_6");
+
+        // Formats & topology
+        if (graphics.HasMember("rtvFormats"))
+        {
+            const auto& rtv = graphics["rtvFormats"];
+            if (!rtv.IsArray())
+            {
+                throw std::invalid_argument("graphics.rtvFormats must be an array");
+            }
+            for (auto& f : rtv.GetArray())
+            {
+                desc.rtvFormats.push_back(ParseDxgiFormat(f));
+            }
+        }
+        if (desc.rtvFormats.empty())
+        {
+            desc.rtvFormats.push_back(DXGI_FORMAT_R8G8B8A8_UNORM); // default single render target
+        }
+        if (graphics.HasMember("dsvFormat") && graphics["dsvFormat"].IsString())
+        {
+            desc.dsvFormat = ParseDxgiFormat(graphics["dsvFormat"]);
+        }
+        if (graphics.HasMember("primitiveTopology") && graphics["primitiveTopology"].IsString())
+        {
+            std::string topoStr = graphics["primitiveTopology"].GetString();
+            auto lower = topoStr;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            if (lower == "trianglelist")
+            {
+                desc.primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            }
+            else if (lower == "linelist")
+            {
+                desc.primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+            }
+            else if (lower == "pointlist")
+            {
+                desc.primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+            }
+            else
+            {
+                throw std::invalid_argument("Unsupported primitiveTopology (supported: trianglelist, linelist, pointlist)");
+            }
+        }
+        if (graphics.HasMember("vertexCount") && graphics["vertexCount"].IsUint())
+        {
+            desc.vertexCount = graphics["vertexCount"].GetUint();
+        }
+        if (desc.vertexCount == 0)
+        {
+            throw std::invalid_argument("graphics.vertexCount must be > 0 for now (indexed draws not implemented)");
+        }
+        desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Graphics;
+    }
+    else
+    {
+        // No legacy fallback: enforce explicit stage object.
+        throw std::invalid_argument("Dispatchable must contain either 'compute' or 'graphics' object; legacy flat form is no longer supported.");
+    }
     return desc;
 }
 

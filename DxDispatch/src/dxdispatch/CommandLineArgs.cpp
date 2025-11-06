@@ -212,6 +212,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             "Disables .PDB generation and suppresses automatic insertion of -Zi into DXC compiler arguments.",
             cxxopts::value<bool>()
             )
+        (
+            "hlsl_lang_ver",
+            "Sets the HLSL language version passed to DXC (e.g. 2018, 2021).",
+            cxxopts::value<std::string>()->default_value("2018")
+        )
         ;
 
     // ONNX OPTIONS
@@ -390,6 +395,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     if (result.count("no_pdb"))
     {
         m_noPdb = result["no_pdb"].as<bool>();
+    }
+
+    if (result.count("hlsl_lang_ver"))
+    {
+        m_hlslLangVer = result["hlsl_lang_ver"].as<std::string>();
     }
 
     if (result.count("print_hlsl_disassembly"))

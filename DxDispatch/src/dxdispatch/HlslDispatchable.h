@@ -33,16 +33,29 @@ public:
 
 private:
     void CompileWithDxc(std::string id);
+    void CompileGraphicsWithDxc(std::string id);
     void CreateRootSignatureAndBindingMap(std::string id);
+
+#ifdef _GAMING_XBOX
+    void CreateRootSignatureFromPrecompiledShaderOnXbox(Microsoft::WRL::ComPtr<IDxcResult> result);
+    void DisablePrecompiledShaderOnXbox(std::vector<std::wstring>& compilerArgs);
+#endif
 
 private:
     std::shared_ptr<Device> m_device;
     Model::HlslDispatchableDesc m_desc;
     bool m_forceDisablePrecompiledShadersOnXbox;
     bool m_noPdb;
+    // HLSL language version string from command line (e.g. "2018", "2021"). Used to inject -HV flag.
+    std::string m_hlslLangVer;
     Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_shaderReflection;
+    // Optional vertex stage reflection when pipelineKind==Graphics. Pixel stage reflection stored in m_shaderReflection.
+    Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_vsShaderReflection;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
+    // Graphics shader blobs (VS/PS) when pipelineKind==Graphics
+    Microsoft::WRL::ComPtr<IDxcBlob> m_vsBlob;
+    Microsoft::WRL::ComPtr<IDxcBlob> m_psBlob;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
     // Separate heap for samplers (D3D12 requires distinct heap type)
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_samplerDescriptorHeap;
