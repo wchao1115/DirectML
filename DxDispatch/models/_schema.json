@@ -222,22 +222,23 @@
                 "compute": { "$ref": "#/$defs/hlslStageShared" },
                 "graphics": {
                     "type": "object",
+                    "description": "Graphics pipeline: mandatory vertex stage, optional pixel stage. If 'pixel' omitted a VS-only pipeline is created (no color/depth writes).",
                     "properties": {
                         "vertex": { "$ref": "#/$defs/hlslStagePer" },
                         "pixel": { "$ref": "#/$defs/hlslStagePer" },
-                        "rtvFormats": { "type": "array", "items": { "type": "string" }, "description": "Render target DXGI formats" },
-                        "dsvFormat": { "type": "string", "description": "Optional depth-stencil DXGI format" },
+                        "rtvFormats": { "type": "array", "items": { "type": "string" }, "description": "Render target DXGI formats (ignored when pixel stage omitted unless required by platform)." },
+                        "dsvFormat": { "type": "string", "description": "Optional depth-stencil DXGI format (ignored when pixel stage omitted)." },
                         "primitiveTopology": { "type": "string", "enum": ["trianglelist", "linelist", "pointlist"], "default": "trianglelist", "description": "Primitive topology for graphics pipeline" },
                         "vertexCount": { "type": "integer", "minimum": 1, "description": "Vertex count for non-indexed DrawInstanced" }
                     },
-                    "required": ["vertex", "pixel"],
+                    "required": ["vertex"],
                     "additionalProperties": false
                 }
             },
             "required": ["compiler"],
             "allOf": [
                 { "if": { "required": ["compute"] }, "then": { "not": { "required": ["graphics"] }, "properties": { "graphics": false, "compilerArgs": { "type": "array", "minItems": 1 } } } },
-                { "if": { "required": ["graphics"] }, "then": { "not": { "required": ["compute"] }, "properties": { "compute": false, "compilerArgs": false, "graphics": { "required": ["vertex", "pixel"], "properties": { "vertexCount": {"type": "integer", "minimum": 1} } } } } }
+                { "if": { "required": ["graphics"] }, "then": { "not": { "required": ["compute"] }, "properties": { "compute": false, "compilerArgs": false, "graphics": { "required": ["vertex"], "properties": { "vertexCount": {"type": "integer", "minimum": 1} } } } } }
             ],
             "additionalProperties": false
         },

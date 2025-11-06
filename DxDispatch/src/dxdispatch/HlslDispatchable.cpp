@@ -168,7 +168,7 @@ BindingData ReflectBindingData(gsl::span<D3D12_SHADER_INPUT_BIND_DESC> shaderInp
 void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 {
     // For compute pipelines we only have m_shaderReflection.
-    // For graphics we may have both m_vsShaderReflection and m_shaderReflection (PS). Merge resources.
+    // For graphics we have vertex reflection in m_shaderReflection and optional pixel reflection in m_psShaderReflection. Merge resources.
     std::vector<D3D12_SHADER_INPUT_BIND_DESC> mergedInputDescs;
     mergedInputDescs.reserve(32);
     auto addReflectionResources = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> refl)
@@ -183,12 +183,12 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
         }
     };
 
-    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_vsShaderReflection)
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_psShaderReflection)
     {
         // Add VS then PS resources; skip duplicates (same name+type+space+bind point) keeping first occurrence.
         std::vector<D3D12_SHADER_INPUT_BIND_DESC> temp;
-        addReflectionResources(m_vsShaderReflection);
-        addReflectionResources(m_shaderReflection); // PS
+        addReflectionResources(m_shaderReflection); // VS
+        addReflectionResources(m_psShaderReflection); // PS optional
 
         // Deduplicate while preserving order.
         std::unordered_map<std::string, size_t> seen;
@@ -272,10 +272,10 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
             m_logger->LogInfo(json.c_str());
         };
 
-        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_vsShaderReflection)
-            ReportShaderDesc(m_vsShaderReflection);
-
+        // Always report vertex (m_shaderReflection). Pixel reported if present.
         ReportShaderDesc(m_shaderReflection);
+        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_psShaderReflection)
+            ReportShaderDesc(m_psShaderReflection);
     }
 
     auto [allDescriptorRanges, bindPoints] = ReflectBindingData(gsl::make_span(mergedInputDescs));
@@ -541,7 +541,7 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     }
 }
 
-// Compile graphics pipeline (VS + PS). Reflection currently taken from PS only for resource bindings.
+// Compile graphics pipeline: mandatory VS, optional PS. Vertex reflection always primary; pixel reflection optional.
 void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
 {
     if (!m_device->GetDxcCompiler())
@@ -587,7 +587,10 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
     };
 
     InjectStageArgs(m_desc.vsCompilerArgs, m_desc.vsEntryPoint, "vs_6_6");
-    InjectStageArgs(m_desc.psCompilerArgs, m_desc.psEntryPoint, "ps_6_6");
+    if (!m_desc.pixelShaderPath.empty())
+    {
+        InjectStageArgs(m_desc.psCompilerArgs, m_desc.psEntryPoint, "ps_6_6");
+    }
 
     // Local compile lambda adapted for per-stage args.
     auto CompileOnePerStage = [&](const std::filesystem::path& path,
@@ -667,8 +670,12 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
 #endif        
     };
 
-    CompileOnePerStage(m_desc.pixelShaderPath, m_desc.psCompilerArgs, m_psBlob, &m_shaderReflection); // pixel reflection stored in m_shaderReflection
-    CompileOnePerStage(m_desc.vertexShaderPath, m_desc.vsCompilerArgs, m_vsBlob, &m_vsShaderReflection, true); // vertex reflection stored in m_vsShaderReflection
+    // Compile pixel stage first if present (optional), then vertex (primary reflection stored in m_shaderReflection)
+    if (!m_desc.pixelShaderPath.empty())
+    {
+        CompileOnePerStage(m_desc.pixelShaderPath, m_desc.psCompilerArgs, m_psBlob, &m_psShaderReflection); // optional pixel reflection
+    }
+    CompileOnePerStage(m_desc.vertexShaderPath, m_desc.vsCompilerArgs, m_vsBlob, &m_shaderReflection, true);
 
     CreateRootSignatureAndBindingMap(id);
 
@@ -676,7 +683,14 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
     pso.pRootSignature = m_rootSignature.Get();
     pso.VS = { m_vsBlob->GetBufferPointer(), m_vsBlob->GetBufferSize() };
-    pso.PS = { m_psBlob->GetBufferPointer(), m_psBlob->GetBufferSize() };
+    if (m_psBlob)
+    {
+        pso.PS = { m_psBlob->GetBufferPointer(), m_psBlob->GetBufferSize() };
+    }
+    else
+    {
+        pso.PS = { nullptr, 0 }; // VS-only pipeline
+    }
     pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 
