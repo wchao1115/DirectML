@@ -95,6 +95,9 @@ public:
     // Records the dispatch of an HLSL shader.
     void RecordDispatch(const char* name, uint32_t threadGroupX, uint32_t threadGroupY, uint32_t threadGroupZ);
 
+    // Draw call for graphics dispatchables.
+    void DrawInstanced(const char* name, D3D_PRIMITIVE_TOPOLOGY primitiveTopology, uint32_t vertexCount);
+
     // Records a GPU timestamp in the device's command list. The device has a limit on the number of 
     // unresolved timestamps; if this capacity is exceeded, the oldest timestamps are dropped.
     void RecordTimestamp();
