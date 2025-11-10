@@ -768,6 +768,29 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
         h.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         THROW_IF_FAILED(m_device->D3D()->CreateDescriptorHeap(&h, IID_GRAPHICS_PPV_ARGS(m_samplerDescriptorHeap.ReleaseAndGetAddressOf())));
     }
+
+    // Ensure a non-zero vertex count for graphics pipelines when the model omitted it.
+    // The JSON parser normally enforces vertexCount > 0, but allow programmatic creation fallback here.
+    if (m_desc.vertexCount == 0)
+    {
+        switch (m_desc.primitiveTopology)
+        {
+        case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+            m_desc.vertexCount = 1; // Single point
+            break;
+        case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+            m_desc.vertexCount = 2; // One line segment
+            break;
+        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+        default:
+            m_desc.vertexCount = 3; // Single triangle default
+            break;
+        }
+        if (m_logger)
+        {
+            m_logger->LogInfo("[info] vertexCount was 0; defaulted based on primitiveTopology.");
+        }
+    }
 }
 
 void HlslDispatchable::Initialize(std::string id)
@@ -1209,13 +1232,7 @@ void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t ite
 {
     if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
     {
-        // Issue a simple non-indexed draw. Vertex buffers & render targets are expected to be set up externally for now.
-        if (m_desc.vertexCount == 0)
-        {
-            throw std::runtime_error("Graphics dispatchable missing vertexCount.");
-        }
-        m_device->GetCommandList()->IASetPrimitiveTopology(m_desc.primitiveTopology);
-        m_device->GetCommandList()->DrawInstanced(m_desc.vertexCount, 1, 0, 0);
+        m_device->DrawInstanced(args.dispatchableName.c_str(), m_desc.primitiveTopology, m_desc.vertexCount);
     }
     else
     {

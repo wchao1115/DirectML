@@ -489,6 +489,35 @@ void Device::RecordDispatch(const char* name, uint32_t threadGroupX, uint32_t th
     PIXEndEvent(m_commandList.Get());
 }
 
+void Device::DrawInstanced(const char* name, D3D_PRIMITIVE_TOPOLOGY primitiveTopology, uint32_t vertexCount)
+{
+    if (vertexCount == 0)
+    {
+        throw std::runtime_error("Graphics dispatchable missing vertexCount.");
+    }
+
+    PIXBeginEvent(m_commandList.Get(), PIX_COLOR(255, 255, 0), "HLSL: '%s'", name);
+    RecordTimestamp();
+
+    for (uint32_t i = 0; i < m_dispatchRepeat; i++)
+    {
+        m_commandList->IASetPrimitiveTopology(primitiveTopology);
+        m_commandList->DrawInstanced(vertexCount, 1, 0, 0);
+
+        if (!m_postDispatchBarriers.empty())
+        {
+            if (m_postDispatchBarriers.size() > std::numeric_limits<uint32_t>::max())
+            {
+                throw std::invalid_argument(fmt::format("ResourceBarrier '{}' is too large.", m_postDispatchBarriers.size()));
+            }
+            m_commandList->ResourceBarrier(static_cast<uint32_t>(m_postDispatchBarriers.size()), m_postDispatchBarriers.data());
+        }
+    }
+
+    RecordTimestamp();
+    PIXEndEvent(m_commandList.Get());
+}
+
 Microsoft::WRL::ComPtr<ID3D12Resource> Device::Upload(uint64_t totalSize, gsl::span<const std::byte> data, std::wstring_view name)
 {
     if (data.size() > totalSize)
