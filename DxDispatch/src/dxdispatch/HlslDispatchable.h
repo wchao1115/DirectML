@@ -38,7 +38,7 @@ private:
 
 #ifdef _GAMING_XBOX
     void CreateRootSignatureFromPrecompiledShaderOnXbox(Microsoft::WRL::ComPtr<IDxcResult> result);
-    void DisablePrecompiledShaderOnXbox(std::vector<std::wstring>& compilerArgs);
+    void RemovePrecompiledShadersCompilerArgs(std::vector<std::wstring>& compilerArgs);
 #endif
 
 private:
