@@ -222,10 +222,37 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 
     if (m_reportReflection && m_shaderReflection)
     {
-        auto ReportShaderDesc = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> refl)->void
+        auto SanitizeCompilerArgs = [&] (std::vector<std::string>& compilerArgs)
+        {
+            std::vector<std::string> sanitizedArgs;
+            auto size = compilerArgs.size();
+            sanitizedArgs.reserve(size);
+            for (size_t i = 0; i < size; )
+            {
+                auto arg = compilerArgs[i];
+                if (i + 1 < size && (arg == "-D" || arg == "/D"))
+                {
+                    const std::string& nextArg = compilerArgs[i + 1];
+                    if (nextArg.find("__XBOX_DX12_ROOT_SIGNATURE") != std::string::npos)
+                    {
+                        i += 2;
+                        continue; // skip both
+                    }
+                }
+                sanitizedArgs.push_back(arg);
+                ++i;
+            }
+
+            // Mandatory compile args to ensure proper HLSL language version and suppress any existing warnings in the code.
+            sanitizedArgs.push_back(std::string("-HV ") + m_hlslLangVer);
+            sanitizedArgs.push_back("-no-warnings");
+            return sanitizedArgs;
+        };
+
+        auto ReportShaderDesc = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection, std::vector<std::string>& compilerArgs)->void
         {
             D3D12_SHADER_DESC shaderDesc = {};
-            THROW_IF_FAILED(refl->GetDesc(&shaderDesc));
+            THROW_IF_FAILED(reflection->GetDesc(&shaderDesc));
             struct Field { const char* name; UINT value; } fields[] = {
                 {"ConstantBuffers", shaderDesc.ConstantBuffers},
                 {"BoundResources", shaderDesc.BoundResources},
@@ -262,6 +289,7 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
             json.reserve(560);
             json.append(fmt::format("\"{}\":{{", id));
             json.append(fmt::format("\"ShaderName\":\"{}\",", m_desc.sourcePath.stem().string()));
+            json.append(fmt::format("\"CompilerArgs\":\"{}\",", fmt::join(SanitizeCompilerArgs(compilerArgs), " ")));
             json.append("\"Reflection\":{");
             for (size_t i = 0; i < std::size(fields); ++i)
             {
@@ -272,10 +300,16 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
             m_logger->LogInfo(json.c_str());
         };
 
-        // Always report vertex (m_shaderReflection). Pixel reported if present.
-        ReportShaderDesc(m_shaderReflection);
-        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics && m_psShaderReflection)
-            ReportShaderDesc(m_psShaderReflection);
+        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+        {
+            ReportShaderDesc(m_shaderReflection, m_desc.vsCompilerArgs);
+            if (m_psShaderReflection)
+                ReportShaderDesc(m_psShaderReflection, m_desc.psCompilerArgs);
+        }
+        else
+        {
+            ReportShaderDesc(m_shaderReflection, m_desc.compilerArgs);
+        }
     }
 
     auto [allDescriptorRanges, bindPoints] = ReflectBindingData(gsl::make_span(mergedInputDescs));
@@ -362,6 +396,8 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     std::vector<std::wstring> compilerArgs;
     std::wstring hv = std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(m_hlslLangVer);
     compilerArgs.push_back(std::wstring(L"-HV ") + hv);
+    compilerArgs.push_back(L"-no-warnings");
+
     for (const auto &argUtf8 : m_desc.compilerArgs)
     {
         compilerArgs.push_back(std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(argUtf8));
@@ -369,7 +405,7 @@ void HlslDispatchable::CompileWithDxc(std::string id)
 
 #ifdef _GAMING_XBOX
     if (m_forceDisablePrecompiledShadersOnXbox)
-        DisablePrecompiledShaderOnXbox(compilerArgs);
+        RemovePrecompiledShadersCompilerArgs(compilerArgs);
 #endif
 
     // Automatically request debug information (PDB generation) unless the user disabled it with --no_pdb.
@@ -496,13 +532,20 @@ void HlslDispatchable::CompileWithDxc(std::string id)
 
     CreateRootSignatureAndBindingMap(id);
 
-    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.pRootSignature = m_rootSignature.Get();
-    psoDesc.CS.pShaderBytecode = shaderBlob->GetBufferPointer();
-    psoDesc.CS.BytecodeLength = shaderBlob->GetBufferSize();
-    THROW_IF_FAILED(m_device->D3D()->CreateComputePipelineState(
-        &psoDesc,
-        IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Compute)
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.pRootSignature = m_rootSignature.Get();
+        psoDesc.CS.pShaderBytecode = shaderBlob->GetBufferPointer();
+        psoDesc.CS.BytecodeLength = shaderBlob->GetBufferSize();
+        THROW_IF_FAILED(m_device->D3D()->CreateComputePipelineState(
+            &psoDesc,
+            IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
+    }
+    else if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
+    {
+        // NonExecutable single VS/PS: compiled for reflection only; no pipeline state created.
+    }
 
     ComPtr<ID3D12DescriptorHeap> descriptorHeap;
     // Create descriptor heaps (CSU + optional sampler)
@@ -554,42 +597,16 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
         return std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(s); 
     };
 
-    auto InjectStageArgs = [&](std::vector<std::string>& stageArgs, const std::string& entry, const char* profileFlag)
+    auto InjectStageArgs = [&](std::vector<std::string>& stageArgs)
     {
         stageArgs.push_back("-HV " + m_hlslLangVer);
-
-        bool hasE = false, hasT = false;
-        for (size_t i = 0; i < stageArgs.size(); ++i)
-        {
-            std::string low = stageArgs[i];
-            std::transform(low.begin(), low.end(), low.begin(), ::tolower);
-            if (low == "-e" || low == "/e") 
-            { 
-                hasE = true; 
-            }
-            else if (low == "-t" || low == "/t") 
-            { 
-                hasT = true; 
-            }
-        }
-
-        if (!hasE)
-        {
-            stageArgs.push_back("-E");
-            stageArgs.push_back(entry);
-        }
-
-        if (!hasT)
-        {
-            stageArgs.push_back("-T");
-            stageArgs.push_back(profileFlag);
-        }
+        stageArgs.push_back("-no-warnings");
     };
 
-    InjectStageArgs(m_desc.vsCompilerArgs, m_desc.vsEntryPoint, "vs_6_6");
+    InjectStageArgs(m_desc.vsCompilerArgs);
     if (!m_desc.pixelShaderPath.empty())
     {
-        InjectStageArgs(m_desc.psCompilerArgs, m_desc.psEntryPoint, "ps_6_6");
+        InjectStageArgs(m_desc.psCompilerArgs);
     }
 
     // Local compile lambda adapted for per-stage args.
@@ -610,7 +627,7 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
 
 #ifdef _GAMING_XBOX
         if (m_forceDisablePrecompiledShadersOnXbox)
-            DisablePrecompiledShaderOnXbox(wargs);
+            RemovePrecompiledShadersCompilerArgs(wargs);
 #endif
 
         if (!m_noPdb)
@@ -811,6 +828,11 @@ void HlslDispatchable::Initialize(std::string id)
 
 void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 {
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
+    {
+        // Skip binding work for NonExecutable shaders; they will not be dispatched.
+        return;
+    }
     uint32_t descriptorIncrementSizeCSU = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     uint32_t descriptorIncrementSizeSampler = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
@@ -1230,6 +1252,14 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 
 void HlslDispatchable::Dispatch(const Model::DispatchCommand& args, uint32_t iteration, DeferredBindings& deferredBinings)
 {
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
+    {
+        if (m_logger)
+        {
+            m_logger->LogInfo(("[info] NonExecutable dispatchable skipped (no dispatch). Name: " + args.dispatchableName).c_str());
+        }
+        return; // Skip execution silently except for log.
+    }
     if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
     {
         m_device->DrawInstanced(args.dispatchableName.c_str(), m_desc.primitiveTopology, m_desc.vertexCount);
@@ -1264,7 +1294,7 @@ void HlslDispatchable::CreateRootSignatureFromPrecompiledShaderOnXbox(ComPtr<IDx
         IID_GRAPHICS_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())));
 }
 
-void HlslDispatchable::DisablePrecompiledShaderOnXbox(std::vector<std::wstring>& compilerArgs)
+void HlslDispatchable::RemovePrecompiledShadersCompilerArgs(std::vector<std::wstring>& compilerArgs)
 {
     for (size_t i = 0; i + 1 < compilerArgs.size(); )
     {

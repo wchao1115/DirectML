@@ -113,7 +113,8 @@ public:
         enum class PipelineKind
         {
             Compute,
-            Graphics
+            Graphics,
+            NonExecutable // Single VS or PS shader; not dispatchable
         };
 
         // Compiler model:
@@ -124,7 +125,7 @@ public:
         std::vector<std::string> compilerArgs; // Compute-only compiler arguments
 
         // Graphics extensions (optional). Presence of 'graphics' object with a vertex shader switches pipelineKind to Graphics. Pixel shader is optional.
-        PipelineKind pipelineKind = PipelineKind::Compute;
+        PipelineKind pipelineKind = PipelineKind::Compute; // Default; may become NonExecutable or Graphics during parse
         std::filesystem::path vertexShaderPath;    // Only valid when pipelineKind==Graphics
         std::filesystem::path pixelShaderPath;     // Only valid when pipelineKind==Graphics
         std::string vsEntryPoint = "main";

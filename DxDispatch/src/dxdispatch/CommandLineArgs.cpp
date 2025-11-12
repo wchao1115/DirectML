@@ -34,6 +34,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
             cxxopts::value<std::filesystem::path>()
         )
         (
+            "init_only",
+            "Only perform initialization (device, resources, dispatchables); skip binding and execution",
+            cxxopts::value<bool>()
+        )
+        (
             "h,help", 
             "Print command-line usage help", 
             cxxopts::value<bool>()
@@ -315,6 +320,11 @@ CommandLineArgs::CommandLineArgs(int argc, char** argv)
     if (result.count("adapter")) 
     { 
         m_adapterSubstring = result["adapter"].as<decltype(m_adapterSubstring)>(); 
+    }
+
+    if (result.count("init_only"))
+    {
+        m_initOnly = result["init_only"].as<bool>();
     }
 
     if (result.count("show_adapters")) 

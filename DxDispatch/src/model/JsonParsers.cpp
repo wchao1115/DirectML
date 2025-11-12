@@ -1714,22 +1714,22 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
     //  - Compute: requires top-level compilerArgs array.
     //  - Graphics: per-stage compilerArgs arrays under graphics.vertex / graphics.pixel.
 
-    bool hasCompute = object.HasMember("compute");
+    bool hasShader = object.HasMember("shader"); 
     bool hasGraphics = object.HasMember("graphics");
-    
-    if (hasCompute && hasGraphics)
+
+    if (hasShader && hasGraphics)
     {
-        throw std::invalid_argument("Dispatchable cannot define both 'compute' and 'graphics'.");
+        throw std::invalid_argument("Dispatchable cannot define both 'shader' and 'graphics'.");
     }
 
-    if (hasCompute)
+    if (hasShader)
     {
         auto compilerArgsValue = object.FindMember("compilerArgs");
 
-        // Top-level compilerArgs are required for compute pipelines (schema enforces this).
+        // Top-level compilerArgs are required for single-shader dispatchables (schema enforces this when 'shader' present).
         if (compilerArgsValue == object.MemberEnd() || !compilerArgsValue->value.IsArray())
         {
-            throw std::invalid_argument("Compute pipeline requires a top-level 'compilerArgs' array.");
+            throw std::invalid_argument("Single-shader dispatchable requires a top-level 'compilerArgs' array.");
         }
         // Populate desc.compilerArgs from JSON before any -E/-T injection so user-supplied flags are preserved.
         for (auto& v : compilerArgsValue->value.GetArray())
@@ -1741,52 +1741,40 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
             desc.compilerArgs.push_back(v.GetString());
         }
 
-        const auto& compute = object["compute"];
-        if (!compute.IsObject())
+        const auto& shaderObject = object["shader"];
+        if (!shaderObject.IsObject())
         {
-            throw std::invalid_argument("'compute' must be an object");
+            throw std::invalid_argument("'shader' must be an object");
         }
         // Source path
-        std::string csSource = ParseStringField(compute, "sourcePath");
-        desc.sourcePath = ResolveInputFilePath(parentPath, csSource);
+        std::string sourcePath = ParseStringField(shaderObject, "sourcePath");
+        desc.sourcePath = ResolveInputFilePath(parentPath, sourcePath);
         // Entry point (default main)
-        std::string entry = ParseStringField(compute, "entryPoint", false, "main");
-        // Inject entry/profile only if not already supplied (search for -E/-T or /E /T)
-        bool hasE = false, hasT = false;
-        for (size_t i = 0; i < desc.compilerArgs.size(); ++i)
-        {
-            std::string low = desc.compilerArgs[i];
-            std::transform(low.begin(), low.end(), low.begin(), ::tolower);
-            if (low == "-e" || low == "/e")
-            {
-                hasE = true;
-            }
-            else if (low == "-t" || low == "/t")
-            {
-                hasT = true;
-            }
-        }
+        std::string entry = ParseStringField(shaderObject, "entryPoint", false, "main");
 
-        if (!hasE)
+        // Determine pipeline kind strictly from entry point (do not inject -E/-T; JSON already supplies them)
+        std::string upper = entry; 
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        if (upper == "CS")
         {
-            desc.compilerArgs.push_back("-E");
-            desc.compilerArgs.push_back(entry);
+            desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Compute;
         }
-
-        if (!hasT)
+        else if (upper == "VS" || upper == "PS")
         {
-            desc.compilerArgs.push_back("-T");
-            desc.compilerArgs.push_back("cs_6_6");
+            desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::NonExecutable; // single VS/PS not executable
         }
-
-        desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Compute;
+        else
+        {
+            // Default: treat as compute if unknown.
+            desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Compute;
+        }
     }
     else if (hasGraphics)
     {
         // Guard against accidental presence of top-level compilerArgs for graphics (schema should already forbid this).
         if (object.HasMember("compilerArgs"))
         {
-            throw std::invalid_argument("Top-level 'compilerArgs' is only valid for compute pipelines; graphics uses per-stage compilerArgs.");
+            throw std::invalid_argument("Top-level 'compilerArgs' is only valid for single-shader dispatchables; graphics uses per-stage compilerArgs.");
         }
 
         const auto& graphics = object["graphics"];
@@ -1810,7 +1798,10 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         {
             throw std::invalid_argument("graphics.vertex.compilerArgs must be an array");
         }
-        for (auto& a : vsArgsIt->value.GetArray()) { desc.vsCompilerArgs.push_back(a.GetString()); }
+        for (auto& a : vsArgsIt->value.GetArray()) 
+        { 
+            desc.vsCompilerArgs.push_back(a.GetString()); 
+        }
 
         if (pixelPtr)
         {
@@ -1819,7 +1810,10 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
             {
                 throw std::invalid_argument("graphics.pixel.compilerArgs must be an array when pixel stage is present");
             }
-            for (auto& a : psArgsIt->value.GetArray()) { desc.psCompilerArgs.push_back(a.GetString()); }
+            for (auto& a : psArgsIt->value.GetArray()) 
+            { 
+                desc.psCompilerArgs.push_back(a.GetString()); 
+            }
         }
 
         // Vertex stage
@@ -1832,37 +1826,6 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
             std::string psSource = ParseStringField(*pixelPtr, "sourcePath");
             desc.pixelShaderPath = ResolveInputFilePath(parentPath, psSource);
             desc.psEntryPoint = ParseStringField(*pixelPtr, "entryPoint", false, "main");
-        }
-        // Inject -E/-T if absent per stage
-        auto injectStage = [](std::vector<std::string>& args, const std::string& entry, const char* profile)
-        {
-            bool hasE = false, hasT = false;
-            for (auto& s : args)
-            {
-                std::string low = s; std::transform(low.begin(), low.end(), low.begin(), ::tolower);
-                if (low == "-e" || low == "/e") 
-                    hasE = true; 
-                else if (low == "-t" || low == "/t") 
-                    hasT = true;
-            }
-
-            if (!hasE) 
-            { 
-                args.push_back("-E"); 
-                args.push_back(entry); 
-            }
-
-            if (!hasT) 
-            { 
-                args.push_back("-T"); 
-                args.push_back(profile); 
-            }
-        };
-
-        injectStage(desc.vsCompilerArgs, desc.vsEntryPoint, "vs_6_6");
-        if (!desc.pixelShaderPath.empty())
-        {
-            injectStage(desc.psCompilerArgs, desc.psEntryPoint, "ps_6_6");
         }
 
         // Formats & topology
@@ -1917,12 +1880,15 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         {
             throw std::invalid_argument("graphics.vertexCount must be > 0 for now (indexed draws not implemented)");
         }
+        // Graphics classification only applies when multiple stages are present (vertex + optional pixel).
+        // If only a vertex stage is present, retain graphics pipeline assembly but still mark as graphics for now;
+        // future refinement may treat VS-only as non-graphics.
         desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Graphics;
     }
     else
     {
-        // No legacy fallback: enforce explicit stage object.
-        throw std::invalid_argument("Dispatchable must contain either 'compute' or 'graphics' object; legacy flat form is no longer supported.");
+        // Must specify either 'shader' or 'graphics'.
+        throw std::invalid_argument("Dispatchable must contain either 'shader' or 'graphics' object; legacy 'compute' key is no longer supported.");
     }
     return desc;
 }

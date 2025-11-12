@@ -74,6 +74,7 @@ public:
     bool PrintVerboseOnnxBindingInfo() const { return m_onnxPrintVerboseBindingInfo; } 
     bool OrtExtensionsEnabled() const { return m_ortExtensionsEnabled; }
     bool OnnxProfilingEnabled() const { return m_onnxProfilingEnabled; }
+    bool InitOnly() const { return m_initOnly; }
     // DXC defines (from repeated -D command line arguments)
     gsl::span<const std::string> GetDxcDefines() const { return m_dxcDefines; }
 
@@ -144,6 +145,7 @@ private:
     bool m_ortExtensionsEnabled = false;
     bool m_onnxProfilingEnabled = false;
     bool m_commandPrinting = false;
+    bool m_initOnly = false; // When true, only perform initialization (device, resources, dispatchables) and skip executing commands.
     // Repeated -D arguments passed directly to DXC (each element is NAME or NAME=VALUE)
     std::vector<std::string> m_dxcDefines;
 };

@@ -268,7 +268,11 @@ HRESULT DxDispatch::RunAll() try
     {
         RETURN_IF_FAILED(m_pixCaptureHelper->BeginCapturableWork());
         m_executor = std::make_unique<Executor>(m_modelWrapper->Value(), m_device, *m_options, m_logger.Get());
-        m_executor->Run();
+
+        if (!m_options->InitOnly())
+        {
+            m_executor->Run();
+        }
         RETURN_IF_FAILED(m_pixCaptureHelper->EndCapturableWork());
     }
     catch(const std::exception& e)
