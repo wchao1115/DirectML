@@ -53,6 +53,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12ShaderReflection> m_psShaderReflection;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
+    Microsoft::WRL::ComPtr<IDxcBlob> m_shaderBlob;
     // Graphics shader blobs (VS + optional PS) when pipelineKind==Graphics
     Microsoft::WRL::ComPtr<IDxcBlob> m_vsBlob;
     Microsoft::WRL::ComPtr<IDxcBlob> m_psBlob;
