@@ -680,59 +680,6 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
 
     CreateRootSignatureAndBindingMap(id);
 
-    // Build graphics PSO (minimal defaults)
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
-    pso.pRootSignature = m_rootSignature.Get();
-    pso.VS = { m_vsBlob->GetBufferPointer(), m_vsBlob->GetBufferSize() };
-    if (m_psBlob)
-    {
-        pso.PS = { m_psBlob->GetBufferPointer(), m_psBlob->GetBufferSize() };
-    }
-    else
-    {
-        pso.PS = { nullptr, 0 }; // VS-only pipeline
-    }
-    pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-
-    if (m_desc.dsvFormat.has_value())
-    {
-        pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-        pso.DSVFormat = m_desc.dsvFormat.value();
-    }
-    else
-    {
-        D3D12_DEPTH_STENCIL_DESC ds{}; 
-        ds.DepthEnable = FALSE; 
-        ds.StencilEnable = FALSE; 
-        pso.DepthStencilState = ds; 
-        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
-    }
-
-    switch (m_desc.primitiveTopology)
-    {
-        case D3D_PRIMITIVE_TOPOLOGY_POINTLIST: 
-            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT; 
-            break;
-        case D3D_PRIMITIVE_TOPOLOGY_LINELIST: 
-            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; 
-            break;
-        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: 
-        default: 
-            pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; 
-            break;
-    }
-
-    pso.NumRenderTargets = (UINT)std::min<size_t>(m_desc.rtvFormats.size(), 8);
-    for (UINT i = 0; i < pso.NumRenderTargets; i++) 
-    {
-        pso.RTVFormats[i] = m_desc.rtvFormats[i];
-    }
-
-    pso.SampleMask = UINT_MAX;
-    pso.SampleDesc.Count = 1;
-    THROW_IF_FAILED(m_device->D3D()->CreateGraphicsPipelineState(&pso, IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
-
     // Descriptor heaps (same logic as compute path)
     uint32_t numCSU = 0;
     uint32_t numSamplers = 0;
@@ -820,6 +767,63 @@ void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
         psoDesc.CS.BytecodeLength = m_shaderBlob->GetBufferSize();
         THROW_IF_FAILED(m_device->D3D()->CreateComputePipelineState(
             &psoDesc,
+            IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
+    }
+    else if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+    {
+        // Build graphics PSO (minimal defaults)
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+        pso.pRootSignature = m_rootSignature.Get();
+        pso.VS = { m_vsBlob->GetBufferPointer(), m_vsBlob->GetBufferSize() };
+        if (m_psBlob)
+        {
+            pso.PS = { m_psBlob->GetBufferPointer(), m_psBlob->GetBufferSize() };
+        }
+        else
+        {
+            pso.PS = { nullptr, 0 }; // VS-only pipeline
+        }
+        pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+
+        if (m_desc.dsvFormat.has_value())
+        {
+            pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+            pso.DSVFormat = m_desc.dsvFormat.value();
+        }
+        else
+        {
+            D3D12_DEPTH_STENCIL_DESC ds{}; 
+            ds.DepthEnable = FALSE; 
+            ds.StencilEnable = FALSE; 
+            pso.DepthStencilState = ds; 
+            pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        }
+
+        switch (m_desc.primitiveTopology)
+        {
+            case D3D_PRIMITIVE_TOPOLOGY_POINTLIST: 
+                pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT; 
+                break;
+            case D3D_PRIMITIVE_TOPOLOGY_LINELIST: 
+                pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; 
+                break;
+            case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: 
+            default: 
+                pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; 
+                break;
+        }
+
+        pso.NumRenderTargets = (UINT)std::min<size_t>(m_desc.rtvFormats.size(), 8);
+        for (UINT i = 0; i < pso.NumRenderTargets; i++) 
+        {
+            pso.RTVFormats[i] = m_desc.rtvFormats[i];
+        }
+
+        pso.SampleMask = UINT_MAX;
+        pso.SampleDesc.Count = 1;
+        THROW_IF_FAILED(m_device->D3D()->CreateGraphicsPipelineState(
+            &pso, 
             IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
     }
     else if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
