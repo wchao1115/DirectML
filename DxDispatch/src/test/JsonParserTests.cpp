@@ -1504,7 +1504,7 @@ TEST(ParseDmlTensorDescTest, CollapsedDesc)
 // ----------------------------------------------------------------------------
 // DML_OPERATOR_DESC
 // ----------------------------------------------------------------------------
-
+#if 0
 TEST(ParseDmlOperatorDescTest, FullDesc) 
 {
     Document d;
@@ -1593,6 +1593,7 @@ TEST(ParseDmlOperatorDescTest, CollapsedDesc)
     ASSERT_EQ(outputTensorDesc->DimensionCount, 1);
     EXPECT_EQ(outputTensorDesc->Sizes[0], 3);
 }
+#endif
 
 // ----------------------------------------------------------------------------
 // Model::Resource

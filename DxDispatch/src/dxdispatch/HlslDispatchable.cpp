@@ -456,10 +456,9 @@ void HlslDispatchable::CompileWithDxc(std::string id)
         throw std::invalid_argument("Failed to compile.");
     }
 
-    ComPtr<IDxcBlob> shaderBlob;
     THROW_IF_FAILED(result->GetOutput(
         DXC_OUT_OBJECT, 
-        IID_PPV_ARGS(&shaderBlob), 
+        IID_PPV_ARGS(&m_shaderBlob), 
         nullptr));
 
     ComPtr<IDxcBlob> reflectionBlob;
@@ -503,8 +502,8 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     if (m_printHlslDisassembly)
     {
         DxcBuffer bytecodeBuffer;
-        bytecodeBuffer.Ptr = shaderBlob->GetBufferPointer();
-        bytecodeBuffer.Size = shaderBlob->GetBufferSize();
+        bytecodeBuffer.Ptr = m_shaderBlob->GetBufferPointer();
+        bytecodeBuffer.Size = m_shaderBlob->GetBufferSize();
         bytecodeBuffer.Encoding = DXC_CP_ACP;
 
         ComPtr<IDxcResult> result;
@@ -531,21 +530,6 @@ void HlslDispatchable::CompileWithDxc(std::string id)
 #endif
 
     CreateRootSignatureAndBindingMap(id);
-
-    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Compute)
-    {
-        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.pRootSignature = m_rootSignature.Get();
-        psoDesc.CS.pShaderBytecode = shaderBlob->GetBufferPointer();
-        psoDesc.CS.BytecodeLength = shaderBlob->GetBufferSize();
-        THROW_IF_FAILED(m_device->D3D()->CreateComputePipelineState(
-            &psoDesc,
-            IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
-    }
-    else if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
-    {
-        // NonExecutable single VS/PS: compiled for reflection only; no pipeline state created.
-    }
 
     ComPtr<ID3D12DescriptorHeap> descriptorHeap;
     // Create descriptor heaps (CSU + optional sampler)
@@ -828,11 +812,22 @@ void HlslDispatchable::Initialize(std::string id)
 
 void HlslDispatchable::Bind(const Bindings& bindings, uint32_t iteration)
 {
-    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Compute)
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.pRootSignature = m_rootSignature.Get();
+        psoDesc.CS.pShaderBytecode = m_shaderBlob->GetBufferPointer();
+        psoDesc.CS.BytecodeLength = m_shaderBlob->GetBufferSize();
+        THROW_IF_FAILED(m_device->D3D()->CreateComputePipelineState(
+            &psoDesc,
+            IID_GRAPHICS_PPV_ARGS(m_pipelineState.ReleaseAndGetAddressOf())));
+    }
+    else if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
     {
         // Skip binding work for NonExecutable shaders; they will not be dispatched.
         return;
     }
+    
     uint32_t descriptorIncrementSizeCSU = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     uint32_t descriptorIncrementSizeSampler = m_device->D3D()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
