@@ -169,6 +169,9 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 {
     // For compute pipelines we only have m_shaderReflection.
     // For graphics we have vertex reflection in m_shaderReflection and optional pixel reflection in m_psShaderReflection. Merge resources.
+    // For NonExecutable PS-only pipelines, JSON parsing set pipelineKind=NonExecutable and
+    // we only have m_psShaderReflection (no vertex shader). In that case, treat the PS
+    // reflection as the sole source of bindings.
     std::vector<D3D12_SHADER_INPUT_BIND_DESC> mergedInputDescs;
     mergedInputDescs.reserve(32);
     auto addReflectionResources = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> refl)
@@ -217,7 +220,15 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
     }
     else
     {
-        addReflectionResources(m_shaderReflection);
+        if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable && m_psShaderReflection && !m_shaderReflection)
+        {
+            // PS-only NonExecutable: use pixel shader reflection for binding layout.
+            addReflectionResources(m_psShaderReflection);
+        }
+        else
+        {
+            addReflectionResources(m_shaderReflection);
+        }
     }
 
     if (m_reportReflection && m_shaderReflection)
@@ -676,11 +687,26 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
     {
         CompileOnePerStage(m_desc.pixelShaderPath, m_desc.psCompilerArgs, m_psBlob, &m_psShaderReflection); // optional pixel reflection
     }
-    CompileOnePerStage(m_desc.vertexShaderPath, m_desc.vsCompilerArgs, m_vsBlob, &m_shaderReflection, true);
+
+    // Support PS-only dispatchables by treating them as non-executable: JSON parsing time
+    // (`JsonParsers::ParseModelHlslDispatchableDesc`) already classifies such dispatchables
+    // as `PipelineKind::NonExecutable`. At runtime we simply skip compiling a vertex shader
+    // when no vertexShaderPath is present.
+    const bool hasVertexShader = !m_desc.vertexShaderPath.empty();
+    if (hasVertexShader)
+    {
+        CompileOnePerStage(m_desc.vertexShaderPath, m_desc.vsCompilerArgs, m_vsBlob, &m_shaderReflection, true);
+    }
+    else if (m_logger)
+    {
+        m_logger->LogInfo("[info] Graphics dispatchable has only a pixel shader; treated as NonExecutable (no bind/dispatch)." );
+    }
 
     CreateRootSignatureAndBindingMap(id);
 
-    // Descriptor heaps (same logic as compute path)
+    // Descriptor heaps (same logic as compute path). For NonExecutable (PS-only) we still
+    // create descriptor heaps so reflection/binding info remains usable if needed, but
+    // Bind/Dispatch will early-out.
     uint32_t numCSU = 0;
     uint32_t numSamplers = 0;
     for (auto& kv : m_bindPoints)
@@ -747,12 +773,16 @@ void HlslDispatchable::Initialize(std::string id)
     {
         throw std::invalid_argument("Only DXC compiler is supported.");
     }
-    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics)
+
+    if (m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::Graphics ||
+        m_desc.pipelineKind == Model::HlslDispatchableDesc::PipelineKind::NonExecutable)
     {
+        // Graphics and NonExecutable (e.g., PS-only) both use the graphics compile path
         CompileGraphicsWithDxc(id);
     }
     else
     {
+        // Compute
         CompileWithDxc(id);
     }
 }
