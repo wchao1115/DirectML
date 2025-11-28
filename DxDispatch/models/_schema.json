@@ -215,14 +215,14 @@
         },
         "hlslDispatchable": {
             "type": "object",
-            "description": "Shader (single stage under 'shader') OR graphics (VS+PS each with separate compilerArgs). The legacy single-stage 'compute' form is removed; use 'shader'.",
+            "description": "Shader (single stage under 'shader') OR graphics (vertex and/or pixel stage with separate compilerArgs). The legacy single-stage 'compute' form is removed; use 'shader'.",
             "properties": {
                 "compiler": { "type": "string", "enum": ["dxc"], "description": "The HLSL compiler" },
                 "compilerArgs": { "type": "array", "items": { "type": "string" }, "description": "Compiler arguments applied to the single-stage shader (graphics vertex/pixel handled separately)." },
                 "shader": { "$ref": "#/$defs/hlslStageShared" },
                 "graphics": {
                     "type": "object",
-                    "description": "Graphics pipeline: mandatory vertex stage, optional pixel stage. If 'pixel' omitted a VS-only pipeline is created (no color/depth writes).",
+                    "description": "Graphics pipeline: at least one of vertex or pixel stage must be present. If 'pixel' is omitted, a VS-only pipeline is created (no color/depth writes). If 'vertex' is omitted, a PS-only pipeline is created.",
                     "properties": {
                         "vertex": { "$ref": "#/$defs/hlslStagePer" },
                         "pixel": { "$ref": "#/$defs/hlslStagePer" },
@@ -231,14 +231,17 @@
                         "primitiveTopology": { "type": "string", "enum": ["trianglelist", "linelist", "pointlist"], "default": "trianglelist", "description": "Primitive topology for graphics pipeline" },
                         "vertexCount": { "type": "integer", "minimum": 1, "description": "Vertex count for non-indexed DrawInstanced" }
                     },
-                    "required": ["vertex"],
+                    "anyOf": [
+                        { "required": ["vertex"] },
+                        { "required": ["pixel"] }
+                    ],
                     "additionalProperties": false
                 }
             },
             "required": ["compiler"],
             "allOf": [
                 { "if": { "required": ["shader"] }, "then": { "not": { "required": ["graphics"] }, "properties": { "graphics": false, "compilerArgs": { "type": "array", "minItems": 1 } } } },
-                { "if": { "required": ["graphics"] }, "then": { "not": { "required": ["shader"] }, "properties": { "shader": false, "compilerArgs": false, "graphics": { "required": ["vertex"], "properties": { "vertexCount": {"type": "integer", "minimum": 1} } } } } }
+                { "if": { "required": ["graphics"] }, "then": { "not": { "required": ["shader"] }, "properties": { "shader": false, "compilerArgs": false, "graphics": { "anyOf": [ { "required": ["vertex"] }, { "required": ["pixel"] } ], "properties": { "vertexCount": {"type": "integer", "minimum": 1} } } } } }
             ],
             "additionalProperties": false
         },

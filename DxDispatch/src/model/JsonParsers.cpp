@@ -1794,13 +1794,18 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
 
         // Per-stage compilerArgs (vertex required; pixel optional)
         auto vsArgsIt = vertex.FindMember("compilerArgs");
-        if (vsArgsIt == vertex.MemberEnd() || !vsArgsIt->value.IsArray())
+        // For PS-only graphics dispatchables we intentionally allow omission of vertex.compilerArgs
+        // and treat the resulting dispatchable as NonExecutable (compile-only reflection).
+        if (vsArgsIt != vertex.MemberEnd())
         {
-            throw std::invalid_argument("graphics.vertex.compilerArgs must be an array");
-        }
-        for (auto& a : vsArgsIt->value.GetArray()) 
-        { 
-            desc.vsCompilerArgs.push_back(a.GetString()); 
+            if (!vsArgsIt->value.IsArray())
+            {
+                throw std::invalid_argument("graphics.vertex.compilerArgs must be an array when present");
+            }
+            for (auto& a : vsArgsIt->value.GetArray()) 
+            { 
+                desc.vsCompilerArgs.push_back(a.GetString()); 
+            }
         }
 
         if (pixelPtr)
@@ -1816,10 +1821,14 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
             }
         }
 
-        // Vertex stage
-        std::string vsSource = ParseStringField(vertex, "sourcePath");
-        desc.vertexShaderPath = ResolveInputFilePath(parentPath, vsSource);
-        desc.vsEntryPoint = ParseStringField(vertex, "entryPoint", false, "main");
+        // Vertex stage (optional for PS-only). If sourcePath is omitted or empty, we
+        // will later classify this as a NonExecutable PS-only dispatchable.
+        std::string vsSource = ParseStringField(vertex, "sourcePath", false, "");
+        if (!vsSource.empty())
+        {
+            desc.vertexShaderPath = ResolveInputFilePath(parentPath, vsSource);
+            desc.vsEntryPoint = ParseStringField(vertex, "entryPoint", false, "main");
+        }
         // Optional pixel stage
         if (pixelPtr)
         {
@@ -1876,14 +1885,22 @@ Model::HlslDispatchableDesc ParseModelHlslDispatchableDesc(const std::filesystem
         {
             desc.vertexCount = graphics["vertexCount"].GetUint();
         }
-        if (desc.vertexCount == 0)
+        if (!desc.vertexShaderPath.empty())
         {
-            throw std::invalid_argument("graphics.vertexCount must be > 0 for now (indexed draws not implemented)");
+            if (desc.vertexCount == 0)
+            {
+                throw std::invalid_argument("graphics.vertexCount must be > 0 for now (indexed draws not implemented)");
+            }
+            // Standard graphics pipeline: VS (required) + optional PS.
+            desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Graphics;
         }
-        // Graphics classification only applies when multiple stages are present (vertex + optional pixel).
-        // If only a vertex stage is present, retain graphics pipeline assembly but still mark as graphics for now;
-        // future refinement may treat VS-only as non-graphics.
-        desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::Graphics;
+        else
+        {
+            // No vertex shader path: treat as PS-only graphics dispatchable which is
+            // categorized as NonExecutable. It will still be compiled for reflection,
+            // but Bind/Dispatch will skip execution.
+            desc.pipelineKind = Model::HlslDispatchableDesc::PipelineKind::NonExecutable;
+        }
     }
     else
     {
