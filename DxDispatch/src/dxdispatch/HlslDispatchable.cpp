@@ -233,31 +233,22 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
 
     if (m_reportReflection && m_shaderReflection)
     {
-        auto SanitizeCompilerArgs = [&] (std::vector<std::string>& compilerArgs)
+        auto SafeCompilerArgs = [&] (std::vector<std::string>& compilerArgs)
         {
-            std::vector<std::string> sanitizedArgs;
+            std::vector<std::string> safeArgs;
             auto size = compilerArgs.size();
-            sanitizedArgs.reserve(size);
+            safeArgs.reserve(size);
             for (size_t i = 0; i < size; )
             {
                 auto arg = compilerArgs[i];
-                if (i + 1 < size && (arg == "-D" || arg == "/D"))
-                {
-                    const std::string& nextArg = compilerArgs[i + 1];
-                    if (nextArg.find("__XBOX_DX12_ROOT_SIGNATURE") != std::string::npos)
-                    {
-                        i += 2;
-                        continue; // skip both
-                    }
-                }
-                sanitizedArgs.push_back(arg);
+                safeArgs.push_back(arg);
                 ++i;
             }
 
             // Mandatory compile args to ensure proper HLSL language version and suppress any existing warnings in the code.
-            sanitizedArgs.push_back(std::string("-HV ") + m_hlslLangVer);
-            sanitizedArgs.push_back("-no-warnings");
-            return sanitizedArgs;
+            safeArgs.push_back(std::string("-HV ") + m_hlslLangVer);
+            safeArgs.push_back("-no-warnings");
+            return safeArgs;
         };
 
         auto ReportShaderDesc = [&](Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection, std::vector<std::string>& compilerArgs)->void
@@ -300,13 +291,26 @@ void HlslDispatchable::CreateRootSignatureAndBindingMap(std::string id)
             json.reserve(560);
             json.append(fmt::format("\"{}\":{{", id));
             json.append(fmt::format("\"ShaderName\":\"{}\",", m_desc.sourcePath.stem().string()));
-            json.append(fmt::format("\"CompilerArgs\":\"{}\",", fmt::join(SanitizeCompilerArgs(compilerArgs), " ")));
+
+            auto joinedArgs = fmt::format("{}", fmt::join(SafeCompilerArgs(compilerArgs), " "));
+            // Escape backslashes and quotes for JSON embedding
+            std::string escapedArgs;
+            escapedArgs.reserve(joinedArgs.size());
+            for (char c : joinedArgs)
+            {
+                if (c == '\\') escapedArgs += "\\\\";
+                else if (c == '"') escapedArgs += "\\\"";
+                else escapedArgs += c;
+            }
+            json.append(fmt::format("\"CompilerArgs\":\"{}\",", escapedArgs));
             json.append("\"Reflection\":{");
+
             for (size_t i = 0; i < std::size(fields); ++i)
             {
                 if (i) json.append(", ");
                 json.append(fmt::format("\"{}\":{}", fields[i].name, fields[i].value));
             }
+
             json.append("}},");
             m_logger->LogInfo(json.c_str());
         };
