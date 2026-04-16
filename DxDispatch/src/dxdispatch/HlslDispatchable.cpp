@@ -413,6 +413,21 @@ void HlslDispatchable::CompileWithDxc(std::string id)
     compilerArgs.push_back(std::wstring(L"-HV ") + hv);
     compilerArgs.push_back(L"-no-warnings");
 
+    // Add the source file's parent directory and its parent as include paths so that
+    // #include directives resolve relative to the source file, not just CWD.
+    auto sourceDir = m_desc.sourcePath.parent_path();
+    if (!sourceDir.empty())
+    {
+        compilerArgs.push_back(L"-I");
+        compilerArgs.push_back(sourceDir.wstring());
+        auto parentDir = sourceDir.parent_path();
+        if (!parentDir.empty())
+        {
+            compilerArgs.push_back(L"-I");
+            compilerArgs.push_back(parentDir.wstring());
+        }
+    }
+
     for (const auto &argUtf8 : m_desc.compilerArgs)
     {
         compilerArgs.push_back(std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(argUtf8));
@@ -620,7 +635,23 @@ void HlslDispatchable::CompileGraphicsWithDxc(std::string id)
         DxcBuffer srcBuf{ source->GetBufferPointer(), source->GetBufferSize(), DXC_CP_ACP };
 
         std::vector<std::wstring> wargs;
-        wargs.reserve(stageArgs.size());
+        wargs.reserve(stageArgs.size() + 2);
+
+        // Add the source file's parent directory and its parent as include paths so that
+        // #include directives resolve relative to the source file, not just CWD.
+        auto sourceDir = path.parent_path();
+        if (!sourceDir.empty())
+        {
+            wargs.push_back(L"-I");
+            wargs.push_back(sourceDir.wstring());
+            auto parentDir = sourceDir.parent_path();
+            if (!parentDir.empty())
+            {
+                wargs.push_back(L"-I");
+                wargs.push_back(parentDir.wstring());
+            }
+        }
+
         for (auto& a : stageArgs) 
             wargs.push_back(Utf8ToWide(a));
 
